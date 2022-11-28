@@ -3,8 +3,8 @@ import torch
 import dataclasses
 import os
 
-from streaming.torch_utils.scnn import StreamingCNN
-from streaming.torch_utils.checkpointed_trainer import CheckpointedTrainer, CheckpointedTrainerOptions
+from source.torch_utils.scnn import StreamingCNN
+from source.torch_utils.checkpointed_trainer import CheckpointedTrainer, CheckpointedTrainerOptions
 
 try:
     from torch.cuda.amp import autocast  # pylint: disable=import-error,no-name-in-module

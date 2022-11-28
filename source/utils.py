@@ -13,9 +13,9 @@ from pathlib import Path
 from pprint import pprint
 from omegaconf import DictConfig
 
-from streaming.tissue_dataset import TissueDataset
-from streaming.torch_utils.samplers import OrderedDistributedSampler, DistributedWeightedRandomSampler
-from streaming.torch_utils.streaming_trainer import StreamingCheckpointedTrainer, StreamingTrainerOptions
+from source.tissue_dataset import TissueDataset
+from source.torch_utils.samplers import OrderedDistributedSampler, DistributedWeightedRandomSampler
+from source.torch_utils.streaming_trainer import StreamingCheckpointedTrainer, StreamingTrainerOptions
 
 
 def initialize_wandb(project, entity, exp_name, dir='./wandb', config={}, tags=None, key=''):

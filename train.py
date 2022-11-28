@@ -6,7 +6,7 @@ import numpy as np
 
 from omegaconf import DictConfig, OmegaConf
 
-from streaming.utils import initialize_wandb, Experiment
+from source.utils import initialize_wandb, Experiment
 
 
 @hydra.main(version_base='1.2.0', config_path='config', config_name='default')

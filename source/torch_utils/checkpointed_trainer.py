@@ -5,8 +5,8 @@ import torch.distributed as dist
 import dataclasses
 from pathlib import Path
 
-from streaming.torch_utils.diagnostics import check_params_distributed
-from streaming.torch_utils.trainer import Trainer, TrainerOptions
+from source.torch_utils.diagnostics import check_params_distributed
+from source.torch_utils.trainer import Trainer, TrainerOptions
 
 try:
     from torch.cuda.amp import autocast  # pylint: disable=import-error,no-name-in-module
