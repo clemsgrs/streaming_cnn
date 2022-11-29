@@ -19,14 +19,29 @@ import shutil
 cv2.setNumThreads(0)
 
 class TissueDataset(torch.utils.data.Dataset):
-    def __init__(self, img_size, img_dir, cache_dir, filetype, csv_fname, augmentations=True,
-                 limit_size=-1, variable_input_shapes=False, tile_size=4096, resize=1, multiply_len=1, num_classes=2,
-                 regression=False, convert_to_vips=False):
+    def __init__(
+        self,
+        img_size,
+        img_dir,
+        cache_dir,
+        filetype,
+        csv_fname,
+        training=True,
+        limit_size=-1,
+        variable_input_shapes=False,
+        tile_size=4096,
+        resize=1,
+        multiply_len=1,
+        num_classes=2,
+        regression=False,
+        convert_to_vips=False,
+    ):
+
         self.img_dir = img_dir
         self.cache_dir = cache_dir
         self.img_size = img_size
         self.filetype = filetype
-        self.augmentations = augmentations
+        self.training = training
         self.variable_input_shapes = variable_input_shapes
         self.tile_size = tile_size
         self.tile_delta = tile_size
@@ -56,8 +71,14 @@ class TissueDataset(torch.utils.data.Dataset):
 
         self.images = included
         if limit_size > -1:
+            if isinstance(limit_size, float):
+                limit_size = int(limit_size * len(self.images))
             self.images = self.images[0:limit_size]
             self.labels = [torch.randint(0, self.num_classes, size=(1,)).item() for _ in range(limit_size)]
+            if self.training:
+                print(f'Training on a (random) subset of the training set ({len(self.images)}/{len(included)})')
+            else:
+                print(f'Tuning on a (random) subset of the tuning set ({len(self.images)}/{len(included)})')
         assert len(self.images) > 0
 
     def __getitem__(self, idx):
@@ -115,7 +136,7 @@ class TissueDataset(torch.utils.data.Dataset):
         # which interpolation to use for each transform
         interp = pyvips.Interpolate.new('bilinear')
 
-        if self.augmentations:
+        if self.training:
             image = self.random_rotate(image, interp)
             image = self.random_flip(image)
             image = self.limit_size(image, mask)

@@ -335,20 +335,22 @@ class Experiment():
             sampler = torch.utils.data.sampler.WeightedRandomSampler(weights, num_samples=len(self.train_dataset), replacement=True)
         return sampler
 
-    def _get_dataset(self, tune, csv_file):
+    def _get_dataset(self, training, csv_file):
         limit = self.settings.train_set_size
-        if tune: limit = -1
-        variable_input_shapes = self.settings.tune_whole_input if tune else self.settings.variable_input_shapes
+        if not training:
+            # limit = -1
+            limit = self.settings.tune_set_size
+        variable_input_shapes = self.settings.tune_whole_input if not training else self.settings.variable_input_shapes
         return TissueDataset(img_size=self.settings.image_size,
                              img_dir=self.settings.data_dir,
                              cache_dir=self.settings.copy_dir,
                              filetype=self.settings.filetype,
                              csv_fname=csv_file,
-                             augmentations=(not tune),
+                             training=training,
                              limit_size=limit,
                              variable_input_shapes=variable_input_shapes,
                              tile_size=self.settings.tile_size,
-                             multiply_len=self.settings.epoch_multiply if not tune else 1,
+                             multiply_len=self.settings.epoch_multiply if training else 1,
                              num_classes=self.settings.num_classes,
                              regression=self.settings.regression,
                              convert_to_vips=self.settings.convert_to_vips)

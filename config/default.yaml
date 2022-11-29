@@ -14,6 +14,7 @@ save_dir: ''  # Where to save the checkpoints
 # NOT REQUIRED
 
 train_set_size: -1  # Sometimes you want to test on smaller train-set you can limit the n-images here
+tune_set_size: -1
 
 # pretrain options
 pretrained: True  # Whether to use ImageNet weights
@@ -48,7 +49,7 @@ train_streaming_layers: True  # Whether to backpropagate of streaming-part of ne
 train_all_layers: False  # Whether to finetune whole network, or only last block
 
 # save and logging options
-resuming: True  # Will restart from the last checkpoint with same experiment-name
+resuming: False  # Will restart from the last checkpoint with same experiment-name
 resume_name: ''  # Restart from another experiment with this name
 resume_epoch: -1  # Restart from specific epoch
 save: True  # Save checkpoints
