@@ -124,13 +124,13 @@ class CheckpointedTrainer(Trainer):
         self.backward_batch(loss, fmap)
         self.accumulated_batches += 1
         self.step_optimizer_if_needed()
-        self.batch_callback(self, self.tunebatches_, loss)
+        self.batch_callback(self, self.batches_seen, loss)
         self.reset_batch_stats()
 
     def tune_checkpointed_batch(self):
         loss, accuracy, fmap = self.forward_checkpointed_batch()
         if loss is not None: loss.detach().cpu()
-        self.batch_callback(self, self.tune_batches, loss)
+        self.batch_callback(self, self.batches_seen, loss)
         del loss, accuracy, fmap
         self.reset_batch_stats()
 

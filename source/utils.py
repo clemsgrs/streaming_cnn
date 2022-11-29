@@ -6,12 +6,10 @@ import wandb
 import torch
 import subprocess
 import torchvision
-import dataclasses
 import numpy as np
 
 from pathlib import Path
-from pprint import pprint
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 
 from source.tissue_dataset import TissueDataset
 from source.torch_utils.samplers import OrderedDistributedSampler, DistributedWeightedRandomSampler
@@ -193,7 +191,7 @@ class Experiment():
         self._resume_if_needed()
         self._sync_distributed_if_needed()
         self._enable_mixed_precision_if_needed()
-        self._log_details(self.net)
+        self._log_details()
         if self.settings.variable_input_shapes: self._configure_tile_delta()
 
     def _test_distributed(self):
@@ -238,7 +236,7 @@ class Experiment():
         wandb.log({'epoch': e})
         logits, gt = trainer.train_epoch(self._train_batch_callback)
         if self.verbose:
-            self.log_train_metrics()
+            self.log_train_ss()
         if self.distributed:
             self.train_sampler.set_epoch(int(e + 10))
         if self.settings.mixedprecision and e == 0:
@@ -274,7 +272,7 @@ class Experiment():
             if self.settings.only_tune: str_e = self.settings.resume_epoch
             else: str_e = str(e)
             self.save_logits(logits, gt, str_e)
-            self.log_tune_metrics(logits, gt, e)
+            self.log_tune_metrics()
             self.save_if_needed(e)
 
     def save_logits(self, logits, gt, str_e):
@@ -357,21 +355,21 @@ class Experiment():
 
     def _train_batch_callback(self, tuner, batches_tuned, loss):
         if self.verbose and self.settings.progressbar:
-            epoch_metrics = tuner.get_epoch_metrics()
-            epoch_loss = tuner.get_epoch_loss()
-            epoch_acc, epoch_auc = epoch_metrics['acc'], epoch_metrics['auc']
+            batch_metrics = tuner.batch_metrics
+            epoch_loss = tuner.get_batch_loss()
+            batch_acc = batch_metrics['acc']
             progress_bar(batches_tuned, math.ceil(len(self.train_dataset) / float(self.world_size)),
-                         '%s loss: %.3f, acc: %.3f, auc: %.3f, b loss: %.3f' %
-                         ("Train", epoch_loss, epoch_acc, epoch_auc, loss))
+                         '%s loss: %.3f, acc: %.3f, b loss: %.3f' %
+                         ("Train", epoch_loss, batch_acc, loss))
 
     def _tune_batch_callback(self, tuner, batches_tuned, loss):
         if self.verbose and self.settings.progressbar:
-            epoch_metrics = tuner.get_epoch_metrics()
-            epoch_loss = tuner.get_epoch_loss()
-            epoch_acc, epoch_auc = epoch_metrics['acc'], epoch_metrics['auc']
+            batch_metrics = tuner.batch_metrics
+            epoch_loss = tuner.get_batch_loss()
+            batch_acc = batch_metrics['acc']
             progress_bar(batches_tuned, math.ceil(len(self.tune_dataset) / float(self.world_size)),
                          '%s loss: %.3f, acc: %.3f, b loss: %.3f' %
-                         ("Tune", epoch_loss, epoch_acc, epoch_auc, loss))
+                         ("Tune", epoch_loss, batch_acc, loss))
 
     def _configure_optimizer(self):
         params = self._get_trainable_params()
@@ -393,6 +391,7 @@ class Experiment():
     def _configure_trainers(self):
         options = StreamingTrainerOptions()
         options.dataloader = self.train_loader
+        options.num_classes = self.settings.num_classes
         options.net = self.net
         options.optimizer = self.optimizer
         options.criterion = self.loss  # type:ignore
@@ -590,14 +589,14 @@ class Experiment():
                 self.tuner.sCNN.dtype = torch.half
                 self.tuner.mixedprecision = True
 
-    def _log_details(self, net):
+    def _log_details(self):
         if self.verbose:
-            print("PyTorch version", torch.__version__)  # type: ignore
+            print("PyTorch version", torch.__version__)
             print("Running distributed:", self.distributed)
             print("CUDA memory allocated:", torch.cuda.memory_allocated())
             print("Number of parameters (stream):", count_parameters(self.stream_net))
             print("Number of parameters (final):", count_parameters(self.net))
             print("Len train_loader", len(self.train_loader), '*', self.world_size)
             print("Len tune_loader", len(self.tune_loader), '*', self.world_size)
-            pprint(dataclasses.asdict(self.settings))
+            print(OmegaConf.to_yaml(self.settings))
             print()

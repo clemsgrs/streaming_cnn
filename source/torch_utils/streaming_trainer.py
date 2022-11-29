@@ -1,7 +1,6 @@
 import numpy as np
 import torch
 import dataclasses
-import os
 
 from source.torch_utils.scnn import StreamingCNN
 from source.torch_utils.checkpointed_trainer import CheckpointedTrainer, CheckpointedTrainerOptions

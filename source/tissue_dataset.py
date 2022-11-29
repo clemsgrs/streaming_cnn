@@ -60,10 +60,10 @@ class TissueDataset(torch.utils.data.Dataset):
             self.labels = [torch.randint(0, self.num_classes, size=(1,)).item() for _ in range(limit_size)]
         assert len(self.images) > 0
 
-    def __getitem__(self, index):
-        self.index = index
+    def __getitem__(self, idx):
+        self.index = idx
         try:
-            data, label = self.get_data_label_for_index(index)
+            data, label = self.get_data_label_for_index(idx)
             return data, label
         except pyvips.error.Error as e:
             print(e)
@@ -72,9 +72,9 @@ class TissueDataset(torch.utils.data.Dataset):
             # this could result in a loop
             return self.get_data_label_for_index(self.index)
 
-    def get_data_label_for_index(self, index):
-        index = index // self.multiply_len
-        img_fname, mask_fname, cache_fname, label = self.biopsy_fname_for_index(index)
+    def get_data_label_for_index(self, idx):
+        idx = idx // self.multiply_len
+        img_fname, mask_fname, cache_fname, label = self.biopsy_fname_for_index(idx)
         img = self.open_and_resize(img_fname, cache_fname)
         if os.path.isfile(mask_fname): mask = np.load(mask_fname)
         else: mask = None
@@ -82,8 +82,8 @@ class TissueDataset(torch.utils.data.Dataset):
         del img
         return data, label
 
-    def biopsy_fname_for_index(self, index):
-        img_fname, label = self.images[index]
+    def biopsy_fname_for_index(self, idx):
+        img_fname, label = self.images[idx]
         img_path = pathlib.Path(self.img_dir) / pathlib.Path(img_fname).with_suffix(self.filetype)
         stem = pathlib.Path(img_fname).stem
         if self.convert_to_vips:

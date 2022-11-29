@@ -6,6 +6,7 @@ import torch.distributed as dist
 from pathlib import Path
 from typing import Tuple
 from sklearn import metrics
+from scipy.special import expit, softmax
 
 try:
     from torch.cuda.amp import autocast  # pylint: disable=import-error,no-name-in-module
@@ -15,12 +16,13 @@ except ModuleNotFoundError:
 
 @dataclasses.dataclass
 class TrainerOptions:
-    net: torch.nn.Module = None  # type:ignore
-    dataloader: torch.utils.data.DataLoader = None  # type:ignore
-    optimizer: torch.optim.Optimizer = None  # type:ignore
-    criterion: torch.nn.CrossEntropyLoss = None  # type:ignore
-    save_dir: Path = None  # type:ignore
-    checkpoint_dir: Path = None  # type:ignore
+    net: torch.nn.Module = None
+    dataloader: torch.utils.data.DataLoader = None
+    num_classes: int = 0
+    optimizer: torch.optim.Optimizer = None
+    criterion: torch.nn.CrossEntropyLoss = None
+    save_dir: Path = None
+    checkpoint_dir: Path = None
     freeze: list = dataclasses.field(default_factory=list)
     accumulate_over_n_batches: int = 1
     distributed: bool = False
@@ -33,7 +35,7 @@ class TrainerOptions:
     regression: bool = False
 
 class Trainer():
-    tune_images: int = 0
+    images_seen: int = 0
     accumulated_batches: int = 0
     accumulated_loss: float = 0.0
     accumulated_accuracy: float = 0.0
@@ -44,6 +46,7 @@ class Trainer():
     def __init__(self, options: TrainerOptions):
         self.net = options.net
         self.dataloader = options.dataloader
+        self.num_classes = options.num_classes
         self.optimizer = options.optimizer
         self.criterion = options.criterion
         self.save_dir = options.save_dir
@@ -101,20 +104,27 @@ class Trainer():
 
     def reset_epoch_stats(self):
         self.accumulated_loss = 0
-        self.accumulated_metrics = {}
-        self.tune_batches = 0
-        self.tune_images = 0
+        self.accumulated_batch_metrics = {'acc': 0.0}
+        self.batches_seen = 0
+        self.images_seen = 0
         self.accumulated_batches = 0
 
+        self.all_probs = np.empty((0,self.num_classes))
         self.all_logits = []
         self.all_labels = []
 
-    def save_batch_stats(self, loss, metrics, logits, labels):
+    def save_batch_stats(self, loss, batch_metrics, logits, labels):
         self.accumulated_loss += float(loss) * len(labels)
-        for name, val in metrics:
-            self.accumulated_metrics[name] += val * len(labels)
-        self.tune_batches += 1
-        self.tune_images += len(labels)
+        for name, val in batch_metrics.items():
+            self.accumulated_batch_metrics[name] += val * len(labels)
+        self.batches_seen += 1
+        self.images_seen += len(labels)
+
+        if self.multilabel:
+            probs = expit(logits)
+        else:
+            probs = softmax(logits, axis=1)
+        self.all_probs = np.append(self.all_probs , probs, axis=0)
 
         self.all_logits.append(logits)
         self.all_labels.append(labels.copy())  # https://github.com/pytorch/pytorch/issues/973#issuecomment-459398189 | fix RuntimeError: received 0 items of ancdata
@@ -123,12 +133,9 @@ class Trainer():
         self.all_logits, self.all_labels = self.epoch_logits_and_labels(gather=True)
 
     def correct_loss_for_multigpu(self):
-        self.accumulated_loss = 0.0
-        self.accumulated_metrics = dict.fromkeys(list(self.metric_dict.keys()), 0.0)
-        for logit, label in zip(self.all_logits, self.all_labels):
-            self.accumulated_loss += float(self.criterion(logit[None], label[None]))
-            self.accumulated_metrics = self.get_metrics(logit[None], label)
-        self.tune_images = len(self.all_logits)
+        self.images_seen = len(self.all_logits)
+        self.accumulated_loss = self.get_epoch_loss() * len(self.all_logits)
+        self.accumulated_epoch_metrics = self.get_epoch_metrics()
 
     def epoch_logits_and_labels(self, gather=False):
         logits, labels = [], []
@@ -161,17 +168,27 @@ class Trainer():
         cpu_list = [tensor.cpu().numpy() for tensor in tensor_list]
         return np.concatenate(cpu_list, axis=0)
 
-    def get_epoch_loss(self):
-        if self.tune_images == 0:
+    def get_batch_loss(self):
+        if self.images_seen == 0:
             return -1
-        return self.accumulated_loss / self.tune_images
+        return self.accumulated_loss / self.images_seen
+
+    def get_epoch_loss(self):
+        accumulated_loss = 0.0
+        for logit, label in zip(self.all_logits, self.all_labels):
+            accumulated_loss += float(self.criterion(logit[None], label[None]))
+        return accumulated_loss / len(self.all_logits)
 
     def get_epoch_metrics(self):
-        if self.tune_images == 0:
+        if self.images_seen == 0:
             return -1
         epoch_metric_dict = {}
-        for name, val in self.accumulated_metrics.items():
-            epoch_metric_dict[name] = val / self.tune_images
+        for name, val in self.accumulated_batch_metrics.items():
+            epoch_metric_dict[name] = val / self.images_seen
+        if self.num_classes == 2:
+            epoch_metric_dict['auc'] = metrics.roc_auc_score(self.all_labels, self.all_probs[:,1])
+        else:
+            epoch_metric_dict['auc'] = metrics.roc_auc_score(self.all_labels, self.all_probs, multi_class='ovr')
         return epoch_metric_dict
 
     def train_epoch(self, batch_callback) -> Tuple[np.array, np.array]:
@@ -195,15 +212,15 @@ class Trainer():
 
     def train_full_dataloader(self, batch_callback):
         for x, y in self.dataloader:
-            loss, metrics, logits = self.train_on_batch(x, y)
-            self.save_batch_stats(loss, metrics, logits, y.cpu().numpy())
-            batch_callback(self, self.tune_batches, loss)
+            loss, batch_metrics, logits = self.train_on_batch(x, y)
+            self.save_batch_stats(loss, batch_metrics, logits, y.cpu().numpy())
+            batch_callback(self, self.batches_seen, loss)
 
     def tune_full_dataloader(self, batch_callback):
         for x, y in self.dataloader:
-            loss, metrics, logits = self.forward_batch(x, y)
-            self.save_batch_stats(loss, metrics, logits, y.cpu().numpy())
-            batch_callback(self, self.tune_batches, loss)
+            loss, batch_metrics, logits = self.forward_batch(x, y)
+            self.save_batch_stats(loss, batch_metrics, logits, y.cpu().numpy())
+            batch_callback(self, self.batches_seen, loss)
 
     def forward_batch(self, x, y):
         if self.mixedprecision:
@@ -223,7 +240,7 @@ class Trainer():
         return output, loss
 
     def train_on_batch(self, x, y):
-        loss, metrics, logits = self.forward_batch(x, y)
+        loss, batch_metrics, logits = self.forward_batch(x, y)
         full_loss = float(loss)
         loss = loss / self.accumulate_over_n_batches / self.n_gpus
         if self.mixedprecision:
@@ -232,7 +249,7 @@ class Trainer():
             loss.backward()
         self.accumulated_batches += 1
         self.step_optimizer_if_needed()
-        return full_loss, metrics, logits
+        return full_loss, batch_metrics, logits
 
     def step_optimizer_if_needed(self):
         if self.accumulated_batches == self.accumulate_over_n_batches:
@@ -304,13 +321,13 @@ class Trainer():
 
     def get_batch_metrics(self, logits, labels):
         if self.regression:
-            return {'auc': 0.0, 'acc': 0.0}
+            self.batch_metrics = {'acc': 0.0}
+            return self.batch_metrics
         if self.multilabel:
-            probs = torch.sigmoid(logits)
+            probs = torch.sigmoid(logits.float())
             preds = np.round(probs) # basically 0.5 thresholding
         else:
-            probs = torch.softmax(logits, dim=1)
-            preds = torch.topk(logits, 1, dim=1)[1]
+            preds = torch.topk(logits.float(), 1, dim=1)[1]
         acc = metrics.accuracy_score(labels, preds)
-        auc = metrics.roc_auc_score(labels, probs)
-        return {'auc': auc, 'acc': acc}
+        self.batch_metrics = {'acc': acc}
+        return self.batch_metrics
