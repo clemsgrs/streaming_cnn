@@ -241,8 +241,9 @@ class CheckpointedTrainer(Trainer):
 
     def check_dataloading_speed(self, start_time, stop_time, threshold=1.0):
         if stop_time - start_time > threshold and not hasattr(self, 'warned_dataloader'):
-            print(f'Data loading takes:{stop_time - start_time:.2f} seconds')
-            print(f'Try adding more RAM or more workers')
+            if self.gpu_rank == 0:
+                print(f'Data loading takes:{stop_time - start_time:.2f} seconds')
+                print(f'Try adding more RAM or more workers')
             self.warned_dataloader = True
 
     def save_checkpoint(self, name, epoch, additional={}):
@@ -253,18 +254,24 @@ class CheckpointedTrainer(Trainer):
             'optimizer': self.optimizer.state_dict()
         }
         state.update(additional)
-        print('Saving', epoch, self.checkpoint_dir / Path(name + '_' + str(epoch) + '_network'))
+        if self.gpu_rank == 0:
+            print('Saving', epoch, self.checkpoint_dir / Path(name + '_' + str(epoch) + '_network'))
 
         try:
             torch.save(state, self.checkpoint_dir / Path(name + '_' + str(epoch) + '_network'))
             torch.save(state, self.checkpoint_dir / Path(name + '_last'))
         except Exception as e:
-            print('WARNING: Network not stored', e)
-        print('Saved', epoch, self.checkpoint_dir / Path(name + '_' + str(epoch) + '_network'))
+            if self.gpu_rank == 0:
+                print('WARNING: Network not stored', e)
+        if self.gpu_rank == 0:
+            print('Saved', epoch, self.checkpoint_dir / Path(name + '_' + str(epoch) + '_network'))
 
     def load_state_dict(self, state):
-        try: self.optimizer.load_state_dict(state['optimizer'])
-        except: print('WARNING: Optimizer not restored')
+        try:
+            self.optimizer.load_state_dict(state['optimizer'])
+        except:
+            if self.gpu_rank == 0:
+                print('WARNING: Optimizer not restored')
         self.net.load_state_dict(state['state_dict_net'])
         self.checkpointed_net.load_state_dict(state['state_dict_checkpointed'])
 

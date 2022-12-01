@@ -9,6 +9,7 @@ import torchvision
 import numpy as np
 
 from pathlib import Path
+from typing import Optional, Dict, List
 from omegaconf import DictConfig, OmegaConf
 
 from source.tissue_dataset import TissueDataset
@@ -16,14 +17,49 @@ from source.torch_utils.samplers import OrderedDistributedSampler, DistributedWe
 from source.torch_utils.streaming_trainer import StreamingCheckpointedTrainer, StreamingTrainerOptions
 
 
-def initialize_wandb(project, entity, exp_name, dir='./wandb', config={}, tags=None, key=''):
+def initialize_wandb(
+    project,
+    entity,
+    exp_name,
+    group: Optional[str] = None,
+    dir: Optional[str] = './wandb',
+    config: Optional[Dict] = {},
+    tags: Optional[List] = None,
+    key: Optional[str] = '',
+    ):
     dir = Path(dir)
     command = f'wandb login {key}'
     subprocess.call(command, shell=True)
     if tags == None:
         tags=[]
-    run = wandb.init(project=project, entity=entity, name=exp_name, dir=dir, config=config, tags=tags)
+    run = wandb.init(project=project, entity=entity, name=exp_name, group=group, dir=dir, config=config, tags=tags)
     return run
+
+
+def hydra_argv_remapper(argv_map):
+    '''
+    Call this function before main
+
+    argv_map is a dict that remaps specific args to something else that hydra will gracefully not choke on
+
+        ex: {'--foo':'standard.hydra.override.foo', '--bar':'example.bar'}
+
+    workaround hydra behaviour with command line flags
+    kindly given at: https://github.com/facebookresearch/hydra/issues/446#issuecomment-881031746
+    '''
+
+    argv = sys.argv
+
+    # Remap the args
+    for k in argv_map.keys():
+        if k in argv:
+            i = argv.index(k)
+            new_arg = f"{argv_map[k]}={argv[i].split('=')[-1]}"
+            argv.append(new_arg)
+            del argv[i]
+
+    # Replace sys.argv with our remapped argv
+    sys.argv = argv
 
 
 def count_parameters(model):
@@ -178,11 +214,14 @@ class Experiment():
 
     def run_experiment(self):
         self.configure_experiment()
-        if self.settings.only_tune: self.tune_epoch(0)
-        else: self.train_and_tune_epochs()
+        if self.settings.only_tune:
+            self.tune_epoch(0)
+        else:
+            self.train_and_tune_epochs()
 
     def configure_experiment(self):
-        if self.distributed: self._test_distributed()
+        if self.distributed:
+            self._test_distributed()
         self._configure_batch_size_per_gpu(self.world_size)
         self._configure_dataloaders()
         self._configure_model()
@@ -193,12 +232,13 @@ class Experiment():
         self._sync_distributed_if_needed()
         self._enable_mixed_precision_if_needed()
         self._log_details()
-        if self.settings.variable_input_shapes: self._configure_tile_delta()
+        if self.settings.variable_input_shapes:
+            self._configure_tile_delta()
 
     def _test_distributed(self):
         if self.rank_0:
             print('Test distributed')
-        results = torch.FloatTensor([0])  # type:ignore
+        results = torch.FloatTensor([0])
         results = results.cuda()
         tensor_list = [results.new_empty(results.shape) for _ in range(self.world_size)]
         torch.distributed.all_gather(tensor_list, results)
@@ -236,9 +276,9 @@ class Experiment():
 
     def train_epoch(self, e, trainer):
         self.epoch = e
-        wandb.log({'epoch': e})
         logits, gt = trainer.train_epoch(self._train_batch_callback)
         if self.rank_0:
+            wandb.log({'epoch': e})
             self.log_train_metrics()
         if self.distributed:
             self.train_sampler.set_epoch(int(e + 10))
@@ -272,8 +312,10 @@ class Experiment():
         logits, gt = self.tuner.tune_epoch(self._tune_batch_callback)
 
         if self.rank_0:
-            if self.settings.only_tune: str_e = self.settings.resume_epoch
-            else: str_e = str(e)
+            if self.settings.only_tune:
+                str_e = self.settings.resume_epoch
+            else:
+                str_e = str(e)
             self.save_logits(logits, gt, str_e)
             self.log_tune_metrics()
             self.save_if_needed(e)
@@ -384,7 +426,8 @@ class Experiment():
         if self.settings.train_all_layers:
             params = list(self.stream_net.parameters()) + list(self.net.parameters())
         else:
-            print('WARNING: optimizer only training last params of network!')
+            if self.rank_0:
+                print('WARNING: optimizer only training last params of network!')
             if self.settings.mixedprecision:
                 params = list(self.net.parameters())
                 for param in self.stream_net.parameters(): param.requires_grad = False
@@ -434,7 +477,8 @@ class Experiment():
             delta *= self.trainer.sCNN.output_stride[-1]
             # if delta < 3000:
             #     delta = (3000 // delta + 1) * delta
-            print('DELTA', delta.item())
+            if self.rank_0:
+                print('DELTA', delta.item())
             self.train_dataset.tile_delta = delta.item()
             self.tune_dataset.tile_delta = delta.item()
 
@@ -501,7 +545,8 @@ class Experiment():
             else:
                 resumed, state = self._resume_with_epoch(name)
 
-            print('Did not reset optimizer, maybe using lr from checkpoint')
+            if self.rank_0:
+                print('Did not reset optimizer, maybe using lr from checkpoint')
             assert self.trainer.net == self.tuner.net  # type:ignore
             assert resumed
 
@@ -561,7 +606,8 @@ class Experiment():
         start_at_epoch = 0
         if resumed:
             start_at_epoch = state['checkpoint'] + 1
-            if self.rank_0: print(f'Resuming from epoch {start_at_epoch}')
+            if self.rank_0:
+                print(f'Resuming from epoch {start_at_epoch}')
 
         self.start_at_epoch = start_at_epoch
 

@@ -66,3 +66,4 @@ wandb:
   project: 'streaming'
   username: 'clemsg'
   dir: '/home/user'
+  group:

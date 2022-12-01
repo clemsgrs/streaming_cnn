@@ -73,7 +73,8 @@ class Trainer():
         self.gpu_rank = gpu_rank
 
     def sync_networks_distributed_if_needed(self, check=True):
-        if self.distributed: self.sync_network_distributed(self.net, check)
+        if self.distributed:
+            self.sync_network_distributed(self.net, check)
 
     def sync_network_distributed(self, net, check=True):
         for _, param in net.named_parameters():
@@ -279,17 +280,20 @@ class Trainer():
             'optimizer': self.optimizer.state_dict()
         }
         state.update(additional)
-        print('Saving', name + '_' + str(epoch) + '_network')
+        if self.gpu_rank == 0:
+            print('Saving', name + '_' + str(epoch) + '_network')
         try:
             torch.save(state, self.checkpoint_dir / Path(name + '_' + str(epoch) + '_network'))
             torch.save(state, self.checkpoint_dir / Path(name + '_last'))
         except Exception as e:
-            print('WARNING: Network not stored', e)
+            if self.gpu_rank == 0:
+                print('WARNING: Network not stored', e)
 
     def checkpoint_available_for_name(self, name, epoch=-1):
         if epoch > -1:
-            print(self.checkpoint_dir / Path(name + '_' + str(epoch) + '_network'))
-            print(os.path.isfile(self.checkpoint_dir / Path(name + '_' + str(epoch) + '_network')))
+            if self.gpu_rank == 0:
+                print(self.checkpoint_dir / Path(name + '_' + str(epoch) + '_network'))
+                print(os.path.isfile(self.checkpoint_dir / Path(name + '_' + str(epoch) + '_network')))
             return os.path.isfile(self.checkpoint_dir / Path(name + '_' + str(epoch) + '_network'))
         else:
             return os.path.isfile(self.checkpoint_dir / Path(name + '_last'))
@@ -308,8 +312,11 @@ class Trainer():
         return state
 
     def load_state_dict(self, state):
-        try: self.optimizer.load_state_dict(state['optimizer'])
-        except KeyError: print('WARNING: Optimizer not restored')
+        try:
+            self.optimizer.load_state_dict(state['optimizer'])
+        except KeyError:
+            if self.gpu_rank == 0:
+                print('WARNING: Optimizer not restored')
         self.net.load_state_dict(state['state_dict'])
 
     def load_checkpoint_if_available(self, name, epoch=-1):
