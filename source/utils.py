@@ -30,22 +30,23 @@ def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
-stty_pipe = os.popen('stty size', 'r')
-stty_output = stty_pipe.read()
-if len(stty_output) > 0:
-    _, term_width = stty_output.split()
-    term_width = int(term_width)
-else:
-    # Set a default in case we couldn't read the term width
-    term_width = 100
-
-TOTAL_BAR_LENGTH = 35.
-last_time = time.time()
-begin_time = last_time
-
-
 def progress_bar(current, total, msg=None):
+
     global last_time, begin_time
+
+    stty_pipe = os.popen('stty size', 'r')
+    stty_output = stty_pipe.read()
+    if len(stty_output) > 0:
+        _, term_width = stty_output.split()
+        term_width = int(term_width)
+    else:
+        # Set a default in case we couldn't read the term width
+        term_width = 100
+
+    TOTAL_BAR_LENGTH = 35.
+    last_time = time.time()
+    begin_time = last_time
+
     current -= 1
     if current == 0:
         begin_time = time.time()  # Reset for new bar.
@@ -163,7 +164,7 @@ class Experiment():
             world_size: how many gpus are in the system
         """
         self.settings = settings
-        self.verbose = (self.settings.local_rank == 0)
+        self.rank_0 = (self.settings.local_rank == 0)
         self.world_size = world_size
         self.distributed = running_distributed
 
@@ -195,12 +196,14 @@ class Experiment():
         if self.settings.variable_input_shapes: self._configure_tile_delta()
 
     def _test_distributed(self):
-        if self.verbose: print('Test distributed')
+        if self.rank_0:
+            print('Test distributed')
         results = torch.FloatTensor([0])  # type:ignore
         results = results.cuda()
         tensor_list = [results.new_empty(results.shape) for _ in range(self.world_size)]
         torch.distributed.all_gather(tensor_list, results)
-        if self.verbose: print('Succeeded distributed communication')
+        if self.rank_0:
+            print('Succeeded distributed communication')
 
     def _configure_batch_size_per_gpu(self, world_size):
         """
@@ -217,7 +220,7 @@ class Experiment():
         else:
             self.settings.batch_size = int(self.settings.batch_size / world_size)
 
-        if self.verbose:
+        if self.rank_0:
             print(f'Per GPU batch-size: {self.settings.batch_size}, ' +
                   f'accumulate over batch: {self.settings.accumulate_batch}')
 
@@ -235,8 +238,8 @@ class Experiment():
         self.epoch = e
         wandb.log({'epoch': e})
         logits, gt = trainer.train_epoch(self._train_batch_callback)
-        if self.verbose:
-            self.log_train_ss()
+        if self.rank_0:
+            self.log_train_metrics()
         if self.distributed:
             self.train_sampler.set_epoch(int(e + 10))
         if self.settings.mixedprecision and e == 0:
@@ -268,7 +271,7 @@ class Experiment():
     def tune_epoch(self, e):
         logits, gt = self.tuner.tune_epoch(self._tune_batch_callback)
 
-        if self.verbose:
+        if self.rank_0:
             if self.settings.only_tune: str_e = self.settings.resume_epoch
             else: str_e = str(e)
             self.save_logits(logits, gt, str_e)
@@ -288,9 +291,9 @@ class Experiment():
             self.trainer.save_checkpoint(self.settings.exp_name, e)
 
     def _configure_dataloaders(self):
-        self.train_dataset = self._get_dataset(tune=False, csv_file=self.settings.train_csv)
+        self.train_dataset = self._get_dataset(training=True, csv_file=self.settings.train_csv)
         self.train_loader, self.train_sampler = self._get_dataloader(self.train_dataset, shuffle=True)
-        self.tune_dataset = self._get_dataset(tune=True, csv_file=self.settings.tune_csv)
+        self.tune_dataset = self._get_dataset(training=False, csv_file=self.settings.tune_csv)
         self.tune_loader, _ = self._get_dataloader(self.tune_dataset, shuffle=False)
 
     def _get_dataloader(self, dataset: torch.utils.data.Dataset, shuffle=True):
@@ -356,7 +359,7 @@ class Experiment():
                              convert_to_vips=self.settings.convert_to_vips)
 
     def _train_batch_callback(self, tuner, batches_tuned, loss):
-        if self.verbose and self.settings.progressbar:
+        if self.rank_0 and self.settings.progressbar:
             batch_metrics = tuner.batch_metrics
             epoch_loss = tuner.get_batch_loss()
             batch_acc = batch_metrics['acc']
@@ -365,7 +368,7 @@ class Experiment():
                          ("Train", epoch_loss, batch_acc, loss))
 
     def _tune_batch_callback(self, tuner, batches_tuned, loss):
-        if self.verbose and self.settings.progressbar:
+        if self.rank_0 and self.settings.progressbar:
             batch_metrics = tuner.batch_metrics
             epoch_loss = tuner.get_batch_loss()
             batch_acc = batch_metrics['acc']
@@ -545,7 +548,7 @@ class Experiment():
         resumed, state = self.trainer.load_checkpoint_if_available(name)
         resumed, state = self.tuner.load_checkpoint_if_available(name)
 
-        if resumed and self.verbose:
+        if resumed and self.rank_0:
             print("WARNING: look out, learning rate from resumed optimizer is used!")
         return resumed, state
 
@@ -558,7 +561,7 @@ class Experiment():
         start_at_epoch = 0
         if resumed:
             start_at_epoch = state['checkpoint'] + 1
-            if self.verbose: print(f'Resuming from epoch {start_at_epoch}')
+            if self.rank_0: print(f'Resuming from epoch {start_at_epoch}')
 
         self.start_at_epoch = start_at_epoch
 
@@ -592,7 +595,8 @@ class Experiment():
                 self.tuner.mixedprecision = True
 
     def _log_details(self):
-        if self.verbose:
+        if self.rank_0:
+            print()
             print("PyTorch version", torch.__version__)
             print("Running distributed:", self.distributed)
             print("CUDA memory allocated:", torch.cuda.memory_allocated())
@@ -600,5 +604,6 @@ class Experiment():
             print("Number of parameters (final):", count_parameters(self.net))
             print("Len train_loader", len(self.train_loader), '*', self.world_size)
             print("Len tune_loader", len(self.tune_loader), '*', self.world_size)
+            print()
             print(OmegaConf.to_yaml(self.settings))
             print()

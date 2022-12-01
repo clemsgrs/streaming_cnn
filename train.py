@@ -9,7 +9,7 @@ from omegaconf import DictConfig, OmegaConf
 from source.utils import initialize_wandb, Experiment
 
 
-@hydra.main(version_base='1.2.0', config_path='config', config_name='default')
+@hydra.main(version_base='1.2.0', config_path='config', config_name='debug')
 def main(cfg: DictConfig):
 
     distributed = (torch.cuda.device_count() > 1)
@@ -32,8 +32,5 @@ def main(cfg: DictConfig):
 
 
 if __name__ == "__main__":
-
-    import logging
-    logging.basicConfig(level=logging.WARNING)
 
     main()

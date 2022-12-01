@@ -1,14 +1,13 @@
 import math
 import random
 
-from time import time
 import cv2
 import numpy as np
 import pyvips
 import torch
 import csv
 import torch.utils.data
-import pathlib
+from pathlib import Path
 import os
 import shutil
 
@@ -17,6 +16,9 @@ import shutil
 
 # Things can get messy with big images and multi-GPU:
 cv2.setNumThreads(0)
+
+import logging
+logging.basicConfig(level=logging.WARNING)
 
 class TissueDataset(torch.utils.data.Dataset):
     def __init__(
@@ -87,7 +89,7 @@ class TissueDataset(torch.utils.data.Dataset):
             data, label = self.get_data_label_for_index(idx)
             return data, label
         except pyvips.error.Error as e:
-            print(e)
+            print(f'pyvips.error.Error: {e}')
             cache_fname = self.biopsy_fname_for_index(self.index)[2]
             os.remove(cache_fname)
             # this could result in a loop
@@ -97,27 +99,31 @@ class TissueDataset(torch.utils.data.Dataset):
         idx = idx // self.multiply_len
         img_fname, mask_fname, cache_fname, label = self.biopsy_fname_for_index(idx)
         img = self.open_and_resize(img_fname, cache_fname)
-        if os.path.isfile(mask_fname): mask = np.load(mask_fname)
-        else: mask = None
+        if os.path.isfile(mask_fname):
+            mask = np.load(mask_fname)
+        else:
+            mask = None
         data = self.transforms(img, mask)
         del img
         return data, label
 
     def biopsy_fname_for_index(self, idx):
         img_fname, label = self.images[idx]
-        img_path = pathlib.Path(self.img_dir) / pathlib.Path(img_fname).with_suffix(self.filetype)
-        stem = pathlib.Path(img_fname).stem
+        img_path = Path(self.img_dir) / Path(img_fname).with_suffix(self.filetype)
+        stem = Path(img_fname).stem
         if self.convert_to_vips:
-            cache_path = pathlib.Path(self.cache_dir) / pathlib.Path(stem + '_cache').with_suffix('.v')
+            cache_path = Path(self.cache_dir) / Path(stem + '_cache').with_suffix('.v')
         else:
-            cache_path = pathlib.Path(self.cache_dir) / pathlib.Path(stem + '_cache').with_suffix(self.filetype)
-        mask_fname = pathlib.Path(self.img_dir) / pathlib.Path(img_fname + '_msk')
+            cache_path = Path(self.cache_dir) / Path(stem + '_cache').with_suffix(self.filetype)
+        mask_fname = Path(self.img_dir) / Path(img_fname + '_msk')
         mask_path = mask_fname.with_suffix('.npy')
         if '[' in label:
             label = torch.tensor([int(i) for i in label.split(';')], dtype=torch.long)
             label = torch.nn.functional.one_hot(label, num_classes=self.num_classes).sum(dim=0).float()
-        elif self.regression: label = torch.tensor(float(label), dtype=torch.float32)
-        else: label = torch.tensor(int(label), dtype=torch.long)
+        elif self.regression:
+            label = torch.tensor(float(label), dtype=torch.float32)
+        else:
+            label = torch.tensor(int(label), dtype=torch.long)
         return str(img_path), str(mask_path), str(cache_path), label
 
     def open_and_resize(self, img_fname, cache_fname):
@@ -126,10 +132,12 @@ class TissueDataset(torch.utils.data.Dataset):
         else:
             if self.resize != 1:
                 image = pyvips.Image.new_from_file(img_fname, shrink=1/self.resize)
-                if self.cache_dir: image.write_to_file(cache_fname)
+                if self.cache_dir:
+                    image.write_to_file(cache_fname)
             else:
                 image = pyvips.Image.new_from_file(img_fname)
-                if self.cache_dir: shutil.copyfile(img_fname, cache_fname)
+                if self.cache_dir:
+                    shutil.copyfile(img_fname, cache_fname)
         return image
 
     def transforms(self, image, mask=None, save=False):
@@ -150,9 +158,11 @@ class TissueDataset(torch.utils.data.Dataset):
         image = self.pad_or_crop_image(image)
 
         # normalize
-        tensor = np.ndarray(buffer=image.cast(pyvips.BandFormat.UCHAR).write_to_memory(),
-                            dtype=np.uint8,
-                            shape=[image.height, image.width, 3])
+        tensor = np.ndarray(
+            buffer=image.cast(pyvips.BandFormat.UCHAR).write_to_memory(),
+            dtype=np.uint8,
+            shape=[image.height, image.width, 3],
+        ) ###TODO: VIPS: vips__open_image_write: opening with O_TMPFILE / O_TMPFILE failed! / simple open
 
         tensor = tensor.transpose(2, 0, 1)
         tensor = torch.from_numpy(tensor)
@@ -219,7 +229,7 @@ class TissueDataset(torch.utils.data.Dataset):
         image = image.crop(x, y, min(image.width, self.img_size), min(image.height, self.img_size))
         return image
 
-    def elastic_transform_old(self, image, interp, adjust_for_image_size=False):
+    def elastic_transform_old(self, image, interp):
         def rand_matrix(width, height, alpha, sigma, grid_scale=16):
             # Originally from https://github.com/rwightman/tensorflow-litterbox
             """Elastic deformation of images as per [Simard2003].  """
@@ -258,7 +268,7 @@ class TissueDataset(torch.utils.data.Dataset):
 
         shift_map = np.stack([rand_x, rand_y], axis=2).flatten()
         trans_map = pyvips.Image.new_from_memory(shift_map.data, image.width // 16, image.height // 16, 2, 'float')
-        trans_map = trans_map.resize(16, kernel='linear')
+        trans_map = trans_map.resize(16, kernel='linear') ###TODO: VIPS: residual scale 16 x 16
         coord_map = pyvips.Image.xyz(image.width, image.height)
         coord_map += trans_map
 
@@ -266,8 +276,8 @@ class TissueDataset(torch.utils.data.Dataset):
 
         return image
 
-    def elastic_transform(self, image, interp, adjust_for_image_size=False):
-        def rand_matrix(width, height, alpha, sigma, grid_scale=16):
+    def elastic_transform(self, image, interp):
+        def rand_matrix(width, height, alpha, sigma):
             # Originally from https://github.com/rwightman/tensorflow-litterbox
             """Elastic deformation of images as per [Simard2003].  """
             # Downscaling the random grid and then upsizing post filter
@@ -295,7 +305,7 @@ class TissueDataset(torch.utils.data.Dataset):
 
         rand_x, rand_y = rand_matrix(image.width // grid_scale, image.height // grid_scale,
                                      alpha=(alpha_h, alpha_w),
-                                     sigma=(sigma_h, sigma_w), grid_scale=grid_scale)
+                                     sigma=(sigma_h, sigma_w))
 
         rand_x = rand_x[:image.height // grid_scale, :image.width // grid_scale]
         rand_y = rand_y[:image.height // grid_scale, :image.width // grid_scale]

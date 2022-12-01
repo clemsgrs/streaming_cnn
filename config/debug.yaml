@@ -1,0 +1,21 @@
+defaults:
+  - default
+  - _self_
+
+exp_name: 'debug'
+num_classes: 2
+
+data_dir: 'data/panda_radboud/pp_slides'
+save_dir: 'output'
+checkpoint_dir: 'output/checkpoints'
+
+train_csv: 'data/panda_radboud/train.csv'
+tune_csv: 'data/panda_radboud/tune.csv'
+filetype: '.jpg'
+
+lr: 2e-4
+num_workers: 1
+tile_size: 3200
+
+train_set_size: 0.05
+tune_set_size: 0.05
