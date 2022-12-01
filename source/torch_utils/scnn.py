@@ -16,7 +16,7 @@ import torch.autograd
 import torch.backends
 import torch.nn.functional
 
-from torch._six import container_abcs
+import collections.abc as container_abcs
 from torch.nn.modules.conv import _ConvNd
 from torch.nn.modules.utils import _pair
 from torch.utils.cpp_extension import load
