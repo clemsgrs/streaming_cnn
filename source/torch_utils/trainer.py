@@ -1,4 +1,3 @@
-import os
 import dataclasses
 import numpy as np
 import torch
@@ -22,7 +21,6 @@ class TrainerOptions:
     optimizer: torch.optim.Optimizer = None
     criterion: torch.nn.CrossEntropyLoss = None
     save_dir: Path = None
-    checkpoint_dir: Path = None
     freeze: list = dataclasses.field(default_factory=list)
     accumulate_over_n_batches: int = 1
     distributed: bool = False
@@ -50,7 +48,7 @@ class Trainer():
         self.optimizer = options.optimizer
         self.criterion = options.criterion
         self.save_dir = options.save_dir
-        self.checkpoint_dir = options.checkpoint_dir
+        self.checkpoint_dir = Path(self.save_dir, 'checkpoints')
         self.freeze = options.freeze
         self.accumulate_over_n_batches = options.accumulate_over_n_batches
         self.distributed = options.distributed
@@ -58,10 +56,16 @@ class Trainer():
         self.n_gpus = options.n_gpus
         self.test_time_bn = options.test_time_bn
         self.dtype = options.dtype
-        if self.distributed: self.config_distributed(self.n_gpus, self.gpu_rank)
+
+        self.checkpoint_dir.mkdir(exist_ok=True)
+
+        if self.distributed:
+            self.config_distributed(self.n_gpus, self.gpu_rank)
+
         self.mixedprecision = options.mixedprecision
         if self.mixedprecision:
             self.grad_scaler = GradScaler(init_scale=8192, growth_interval=4)
+
         self.multilabel = options.multilabel
         self.regression = options.regression
         self.reset_epoch_stats()
@@ -100,8 +104,10 @@ class Trainer():
     def prepare_batchnorm_for_tuning(self, net):
         for mod in net.modules():
             if isinstance(mod, torch.nn.BatchNorm2d):
-                if self.test_time_bn: mod.train()
-                else: mod.eval()
+                if self.test_time_bn:
+                    mod.train()
+                else:
+                    mod.eval()
 
     def reset_epoch_stats(self):
         self.accumulated_loss = 0
@@ -132,6 +138,10 @@ class Trainer():
 
     def stack_epoch_logits(self):
         self.all_logits, self.all_labels = self.epoch_logits_and_labels(gather=True)
+        if self.multilabel:
+            self.all_probs = expit(self.all_logits)
+        else:
+            self.all_probs = softmax(self.all_logits, axis=1)
 
     def correct_loss_for_multigpu(self):
         self.images_seen = len(self.all_logits)
@@ -273,7 +283,7 @@ class Trainer():
                 if param.grad is not None:
                     dist.all_reduce(param.grad.data, op=dist.ReduceOp.SUM)
 
-    def save_checkpoint(self, name, epoch, additional={}):
+    def save_checkpoint(self, epoch, additional={}):
         state = {
             'checkpoint': epoch,
             'state_dict': self.net.state_dict(),
@@ -281,34 +291,34 @@ class Trainer():
         }
         state.update(additional)
         if self.gpu_rank == 0:
-            print('Saving', name + '_' + str(epoch) + '_network')
+            print(f'Saving model checkpoint for epoch {epoch}')
         try:
-            torch.save(state, self.checkpoint_dir / Path(name + '_' + str(epoch) + '_network'))
-            torch.save(state, self.checkpoint_dir / Path(name + '_last'))
+            save_path = Path(self.checkpoint_dir, f'model_{epoch}')
+            torch.save(state, save_path)
+            torch.save(state, Path(self.checkpoint_dir, f'model_last'))
+            if self.gpu_rank == 0:
+                print(f'Saved: {save_path}')
         except Exception as e:
             if self.gpu_rank == 0:
-                print('WARNING: Network not stored', e)
+                print(f'WARNING: Network not stored: {e}')
 
-    def checkpoint_available_for_name(self, name, epoch=-1):
+    def checkpoint_available(self, epoch=-1):
         if epoch > -1:
             if self.gpu_rank == 0:
-                print(self.checkpoint_dir / Path(name + '_' + str(epoch) + '_network'))
-                print(os.path.isfile(self.checkpoint_dir / Path(name + '_' + str(epoch) + '_network')))
-            return os.path.isfile(self.checkpoint_dir / Path(name + '_' + str(epoch) + '_network'))
+                checkpoint_path = Path(self.checkpoint_dir, f'model_{epoch}')
+                print(checkpoint_path.is_file())
+            return checkpoint_path.is_file()
         else:
-            return os.path.isfile(self.checkpoint_dir / Path(name + '_last'))
+            last_path = Path(self.checkpoint_dir, f'model_last')
+            return last_path.is_file()
 
-    def load_network_checkpoint(self, name):
-        state = torch.load(self.checkpoint_dir / Path(name))
-        self.load_state_dict(state)
-
-    def load_checkpoint(self, name, epoch=-1):
+    def load_checkpoint(self, epoch=-1):
         if epoch > -1:
-            state = torch.load(self.checkpoint_dir / Path(name + '_' + str(epoch) + '_network'),
-                               map_location=lambda storage, loc: storage)
+            checkpoint_path = Path(self.checkpoint_dir, f'model_{epoch}')
+            state = torch.load(checkpoint_path, map_location=lambda storage, loc: storage)
         else:
-            state = torch.load(self.checkpoint_dir / Path(name + '_last'),
-                               map_location=lambda storage, loc: storage)
+            last_path = Path(self.checkpoint_dir, f'model_last')
+            state = torch.load(last_path, map_location=lambda storage, loc: storage)
         return state
 
     def load_state_dict(self, state):
@@ -319,9 +329,9 @@ class Trainer():
                 print('WARNING: Optimizer not restored')
         self.net.load_state_dict(state['state_dict'])
 
-    def load_checkpoint_if_available(self, name, epoch=-1):
-        if self.checkpoint_available_for_name(name, epoch):
-            state = self.load_checkpoint(name, epoch)
+    def load_checkpoint_if_available(self, epoch=-1):
+        if self.checkpoint_available(epoch):
+            state = self.load_checkpoint(epoch)
             self.load_state_dict(state)
             return True, state
         return False, None

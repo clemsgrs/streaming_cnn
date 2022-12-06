@@ -37,6 +37,7 @@ class TissueDataset(torch.utils.data.Dataset):
         num_classes=2,
         regression=False,
         convert_to_vips=False,
+        rank_0=False,
     ):
 
         self.img_dir = img_dir
@@ -52,6 +53,7 @@ class TissueDataset(torch.utils.data.Dataset):
         self.num_classes = num_classes
         self.regression = regression
         self.convert_to_vips = convert_to_vips
+        self.rank_0 = rank_0
 
         images = []
         with open(csv_fname) as csvfile:
@@ -77,9 +79,9 @@ class TissueDataset(torch.utils.data.Dataset):
                 limit_size = int(limit_size * len(self.images))
             self.images = self.images[0:limit_size]
             self.labels = [torch.randint(0, self.num_classes, size=(1,)).item() for _ in range(limit_size)]
-            if self.training:
+            if self.training and self.rank_0:
                 print(f'Training on a (random) subset of the training set ({len(self.images)}/{len(included)})')
-            else:
+            elif self.rank_0:
                 print(f'Tuning on a (random) subset of the tuning set ({len(self.images)}/{len(included)})')
         assert len(self.images) > 0
 

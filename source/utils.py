@@ -4,6 +4,7 @@ import time
 import math
 import wandb
 import torch
+import shutil
 import subprocess
 import torchvision
 import numpy as np
@@ -204,6 +205,18 @@ class Experiment():
         self.world_size = world_size
         self.distributed = running_distributed
 
+        self.exp_dir = Path(settings.save_dir, settings.exp_name)
+        try:
+            self.exp_dir.mkdir(exist_ok=False, parents=True)
+        except Exception as e:
+            if self.rank_0:
+                ans = input(f'{self.exp_dir} already exists! Erase it? (y/n) ')
+                if ans == 'n':
+                    raise Exception
+                else:
+                    shutil.rmtree(self.exp_dir)
+                    self.exp_dir.mkdir(exist_ok=True, parents=True)
+
         # When training with mixed precision and only finetuning last layers, we
         # do not have to backpropagate the streaming layers
         if self.settings.mixedprecision and not self.settings.train_all_layers:
@@ -313,24 +326,25 @@ class Experiment():
 
         if self.rank_0:
             if self.settings.only_tune:
-                str_e = self.settings.resume_epoch
+                epoch = self.settings.resume_epoch
             else:
-                str_e = str(e)
-            self.save_logits(logits, gt, str_e)
+                epoch = e
+            self.save_logits(logits, gt, epoch)
             self.log_tune_metrics()
             self.save_if_needed(e)
 
-    def save_logits(self, logits, gt, str_e):
-        path = Path(self.settings.save_dir)
+    def save_logits(self, logits, gt, epoch):
         try:
-            np.save(str(path / Path(f'{self.settings.exp_name}_tune_logits_{str_e}')), logits)
-            np.save(str(path / Path(f'{self.settings.exp_name}_tune_gt_{str_e}')), gt)
+            logits_save_path = Path(self.exp_dir, f'tune_logits_{epoch}')
+            gt_save_path = Path(self.exp_dir, f'tune_gt_{epoch}')
+            np.save(logits_save_path, logits)
+            np.save(gt_save_path, gt)
         except Exception as exc:
             print(f'Logits could not be written to disk: {exc}')
 
     def save_if_needed(self, e):
         if self.settings.save and not self.settings.only_tune:
-            self.trainer.save_checkpoint(self.settings.exp_name, e)
+            self.trainer.save_checkpoint(e)
 
     def _configure_dataloaders(self):
         self.train_dataset = self._get_dataset(training=True, csv_file=self.settings.train_csv)
@@ -398,7 +412,8 @@ class Experiment():
                              multiply_len=self.settings.epoch_multiply if training else 1,
                              num_classes=self.settings.num_classes,
                              regression=self.settings.regression,
-                             convert_to_vips=self.settings.convert_to_vips)
+                             convert_to_vips=self.settings.convert_to_vips,
+                             rank_0=self.rank_0)
 
     def _train_batch_callback(self, tuner, batches_tuned, loss):
         if self.rank_0 and self.settings.progressbar:
@@ -442,9 +457,8 @@ class Experiment():
         options.num_classes = self.settings.num_classes
         options.net = self.net
         options.optimizer = self.optimizer
-        options.criterion = self.loss  # type:ignore
-        options.save_dir = Path(self.settings.save_dir)
-        options.checkpoint_dir = Path(self.settings.checkpoint_dir)
+        options.criterion = self.loss
+        options.save_dir = self.exp_dir
         options.checkpointed_net = self.stream_net
         options.batch_size = self.settings.batch_size
         options.accumulate_over_n_batches = self.settings.accumulate_batch
@@ -539,11 +553,12 @@ class Experiment():
 
             if self.settings.weight_averaging:
                 window = 5
-                resumed, state = self.resume_with_averaging(name,
-                                                            self.settings.resume_epoch - math.floor(window / 2.),
-                                                            self.settings.resume_epoch + math.floor(window / 2.))
+                resumed, state = self.resume_with_averaging(
+                    self.settings.resume_epoch - math.floor(window / 2.),
+                    self.settings.resume_epoch + math.floor(window / 2.),
+                )
             else:
-                resumed, state = self._resume_with_epoch(name)
+                resumed, state = self._resume_with_epoch()
 
             if self.rank_0:
                 print('Did not reset optimizer, maybe using lr from checkpoint')
@@ -554,12 +569,12 @@ class Experiment():
         self._calculate_starting_epoch(resumed, state)
         del state
 
-    def _resume_with_epoch(self, name):
-        resumed, state = self.trainer.load_checkpoint_if_available(name, self.settings.resume_epoch)
-        resumed, state = self.tuner.load_checkpoint_if_available(name, self.settings.resume_epoch)
+    def _resume_with_epoch(self):
+        resumed, state = self.trainer.load_checkpoint_if_available(self.settings.resume_epoch)
+        resumed, state = self.tuner.load_checkpoint_if_available(self.settings.resume_epoch)
         return resumed, state
 
-    def resume_with_averaging(self, resume_name, begin_epoch, after_epoch, window=5):
+    def resume_with_averaging(self, begin_epoch, after_epoch, window=5):
         param_dict = {}
 
         # sum all parameters
@@ -567,7 +582,7 @@ class Experiment():
         checkpoint_range = np.arange(begin_epoch, after_epoch)
         for i in checkpoint_range:
             try:
-                current_param_dict = dict(self.trainer.load_checkpoint(resume_name, i))
+                current_param_dict = dict(self.trainer.load_checkpoint(i))
             except Exception as e:
                 print(f'Did not find {i}', e)
                 return False, None
@@ -589,10 +604,8 @@ class Experiment():
         return True, param_dict
 
     def _try_resuming_last_checkpoint(self, resumed):
-        name = self.settings.exp_name
-        resumed, state = self.trainer.load_checkpoint_if_available(name)
-        resumed, state = self.tuner.load_checkpoint_if_available(name)
-
+        resumed, state = self.trainer.load_checkpoint_if_available()
+        resumed, state = self.tuner.load_checkpoint_if_available()
         if resumed and self.rank_0:
             print("WARNING: look out, learning rate from resumed optimizer is used!")
         return resumed, state
