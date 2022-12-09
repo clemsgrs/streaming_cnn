@@ -121,7 +121,7 @@ class CheckpointedTrainer(Trainer):
             self.tune_checkpointed_batch()
 
     def train_checkpointed_batch(self):
-        loss, batch_metrics, fmap = self.forward_checkpointed_batch()
+        loss, fmap = self.forward_checkpointed_batch()
         if loss is not None:
             loss = loss / self.accumulate_over_n_batches / self.n_gpus
         self.backward_batch(loss, fmap)
@@ -131,22 +131,22 @@ class CheckpointedTrainer(Trainer):
         self.reset_batch_stats()
 
     def tune_checkpointed_batch(self):
-        loss, batch_metrics, fmap = self.forward_checkpointed_batch()
+        loss, fmap = self.forward_checkpointed_batch()
         if loss is not None:
             loss.detach().cpu()
         self.batch_callback(self, self.batches_seen, loss)
-        del loss, batch_metrics, fmap
+        del loss, fmap
         self.reset_batch_stats()
 
     def forward_checkpointed_batch(self):
         labels, fmap = self.stack_batch()
         if self.should_finish_batch_on_gpu():
             fmap.requires_grad = torch.is_grad_enabled()
-            loss, batch_metrics, logits = self.forward_batch(fmap, labels)
-            self.save_batch_stats(loss, batch_metrics, logits, labels.cpu().numpy())
-            return loss, batch_metrics, fmap
+            loss, logits = self.forward_batch(fmap, labels)
+            self.save_batch_stats(loss, logits, labels.cpu().numpy())
+            return loss, fmap
         else:
-            return None, None, fmap
+            return None, fmap
 
     def stack_batch(self):
         labels = torch.stack(self.batch_labels).cuda()

@@ -454,21 +454,17 @@ class Experiment():
 
     def _train_batch_callback(self, tuner, batches_tuned, loss):
         if self.rank_0 and self.settings.progressbar:
-            batch_metrics = tuner.batch_metrics
             epoch_loss = tuner.get_batch_loss()
-            batch_acc = batch_metrics['acc']
             progress_bar(batches_tuned, math.ceil(len(self.train_dataset) / float(self.world_size)),
-                         '%s loss: %.3f, acc: %.3f, b loss: %.3f' %
-                         ("Train", epoch_loss, batch_acc, loss))
+                         '%s loss: %.3f, b loss: %.3f' %
+                         ("Train", epoch_loss, loss))
 
     def _tune_batch_callback(self, tuner, batches_tuned, loss):
         if self.rank_0 and self.settings.progressbar:
-            batch_metrics = tuner.batch_metrics
             epoch_loss = tuner.get_batch_loss()
-            batch_acc = batch_metrics['acc']
             progress_bar(batches_tuned, math.ceil(len(self.tune_dataset) / float(self.world_size)),
-                         '%s loss: %.3f, acc: %.3f, b loss: %.3f' %
-                         ("Tune", epoch_loss, batch_acc, loss))
+                         '%s loss: %.3f, b loss: %.3f' %
+                         ("Tune", epoch_loss, loss))
 
     def _configure_optimizer(self):
         params = self._get_trainable_params()
