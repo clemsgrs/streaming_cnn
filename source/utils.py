@@ -10,7 +10,7 @@ import torchvision
 import numpy as np
 
 from pathlib import Path
-from typing import Optional, Dict, List
+from typing import Optional, List
 from omegaconf import DictConfig, OmegaConf
 
 from source.tissue_dataset import TissueDataset
@@ -18,13 +18,43 @@ from source.torch_utils.samplers import OrderedDistributedSampler, DistributedWe
 from source.torch_utils.streaming_trainer import StreamingCheckpointedTrainer, StreamingTrainerOptions
 
 
+def write_dictconfig(d, f, child: bool = False, ntab=0):
+    for k, v in d.items():
+        if isinstance(v, dict):
+            if not child:
+                f.write(f'{k}:\n')
+            else:
+                for _ in range(ntab):
+                    f.write('\t')
+                f.write(f'- {k}:\n')
+            write_dictconfig(v, f, True, ntab=ntab+1)
+        else:
+            if isinstance(v, list):
+                if not child:
+                    f.write(f'{k}:\n')
+                    for e in v:
+                        f.write(f'\t- {e}\n')
+                else:
+                    for _ in range(ntab):
+                        f.write('\t')
+                    f.write(f'{k}:\n')
+                    for e in v:
+                        for _ in range(ntab):
+                            f.write('\t')
+                        f.write(f'\t- {e}\n')
+            else:
+                if not child:
+                    f.write(f'{k}: {v}\n')
+                else:
+                    for _ in range(ntab):
+                        f.write('\t')
+                    f.write(f'- {k}: {v}\n')
+
+
 def initialize_wandb(
-    project,
-    entity,
-    exp_name,
+    cfg,
     group: Optional[str] = None,
     dir: Optional[str] = './wandb',
-    config: Optional[Dict] = {},
     tags: Optional[List] = None,
     key: Optional[str] = '',
     ):
@@ -33,7 +63,14 @@ def initialize_wandb(
     subprocess.call(command, shell=True)
     if tags == None:
         tags=[]
-    run = wandb.init(project=project, entity=entity, name=exp_name, group=group, dir=dir, config=config, tags=tags)
+    config = OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True)
+    run = wandb.init(project=cfg.wandb.project, entity=cfg.wandb.username, name=cfg.wandb.exp_name, group=group, dir=dir, config=config, tags=tags)
+    config_file_path = Path(run.dir, 'run_config.yaml')
+    d = OmegaConf.to_container(cfg, resolve=True)
+    with open(config_file_path, 'w+') as f:
+        write_dictconfig(d, f)
+        wandb.save(str(config_file_path))
+        f.close()
     return run
 
 
@@ -209,13 +246,13 @@ class Experiment():
         try:
             self.exp_dir.mkdir(exist_ok=False, parents=True)
         except Exception as e:
-            if self.rank_0:
-                ans = input(f'{self.exp_dir} already exists! Erase it? (y/n) ')
-                if ans == 'n':
-                    raise Exception
-                else:
+            if not self.settings.resuming:
+                if self.rank_0:
+                    print(f'{self.exp_dir} already exists! Erasing it')
                     shutil.rmtree(self.exp_dir)
-                    self.exp_dir.mkdir(exist_ok=True, parents=True)
+                    self.exp_dir.mkdir(exist_ok=False, parents=True)
+            else:
+                raise e
 
         # When training with mixed precision and only finetuning last layers, we
         # do not have to backpropagate the streaming layers
@@ -291,7 +328,7 @@ class Experiment():
         self.epoch = e
         logits, gt = trainer.train_epoch(self._train_batch_callback)
         if self.rank_0:
-            wandb.log({'epoch': e})
+            wandb.log({'epoch': e+1})
             self.log_train_metrics()
         if self.distributed:
             self.train_sampler.set_epoch(int(e + 10))

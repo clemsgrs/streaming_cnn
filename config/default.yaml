@@ -65,5 +65,6 @@ accumulate_batch: -1  # Do not touch, is calculated automatically
 wandb:
   project: 'streaming'
   username: 'clemsg'
+  exp_name: '${exp_name}'
   dir: '/home/user'
   group:

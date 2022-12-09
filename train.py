@@ -1,10 +1,9 @@
 import os
-import wandb
 import hydra
 import torch
 import numpy as np
 
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 
 from source.utils import initialize_wandb, hydra_argv_remapper, Experiment
 
@@ -24,8 +23,7 @@ def main(cfg: DictConfig):
     # set up wandb
     if cfg.local_rank == 0:
         key = os.environ.get('WANDB_API_KEY')
-        config = OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True)
-        run = initialize_wandb(cfg.wandb.project, cfg.wandb.username, cfg.exp_name, group=cfg.wandb.group, dir=cfg.wandb.dir, config=config, key=key)
+        run = initialize_wandb(cfg, key=key)
         run.define_metric('epoch', summary='max')
         run.define_metric('train/lr', step_metric='epoch')
 
@@ -35,10 +33,11 @@ def main(cfg: DictConfig):
 
 if __name__ == "__main__":
 
-    m = {}
-    for i in range(torch.cuda.device_count()):
-        m_i = {f'--local_rank={i}': 'local_rank'}
-        m.update(m_i)
-    hydra_argv_remapper(m)
+    if torch.cuda.device_count() > 1:
+        m = {}
+        for i in range(torch.cuda.device_count()):
+            m_i = {f'--local_rank={i}': 'local_rank'}
+            m.update(m_i)
+        hydra_argv_remapper(m)
 
     main()
