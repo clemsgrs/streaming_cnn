@@ -136,7 +136,7 @@ class Trainer():
         self.all_probs = np.append(self.all_probs , probs, axis=0)
         self.all_preds.extend(list(preds))
         self.all_logits.append(logits)
-        self.all_labels.append(labels.copy())  # https://github.com/pytorch/pytorch/issues/973#issuecomment-459398189 | fix RuntimeError: received 0 items of ancdata
+        self.all_labels.append(list(labels.copy()))  # https://github.com/pytorch/pytorch/issues/973#issuecomment-459398189 | fix RuntimeError: received 0 items of ancdata
 
     def stack_epoch_logits(self):
         self.all_logits, self.all_labels = self.epoch_logits_and_labels(gather=True)

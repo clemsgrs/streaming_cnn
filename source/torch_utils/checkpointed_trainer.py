@@ -246,8 +246,10 @@ class CheckpointedTrainer(Trainer):
         self.all_logits, self.all_labels = self.epoch_logits_and_labels(gather=self.distributed and not self.gather_batch_on_one_gpu)
         if self.multilabel:
             self.all_probs = expit(self.all_logits)
+            self.all_preds = np.round(self.all_probs)
         else:
             self.all_probs = softmax(self.all_logits, axis=1)
+            self.all_preds = list(np.argpartition(self.all_probs, -1, axis=-1)[:,-1])
 
     def check_dataloading_speed(self, start_time, stop_time, threshold=1.0):
         if stop_time - start_time > threshold and not hasattr(self, 'warned_dataloader'):
