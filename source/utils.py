@@ -12,6 +12,7 @@ import numpy as np
 from pathlib import Path
 from typing import Optional, List
 from omegaconf import DictConfig, OmegaConf
+from collections import defaultdict
 
 from source.tissue_dataset import TissueDataset
 from source.torch_utils.samplers import OrderedDistributedSampler, DistributedWeightedRandomSampler
@@ -246,7 +247,7 @@ class Experiment():
         try:
             self.exp_dir.mkdir(exist_ok=False, parents=True)
         except Exception as e:
-            if not self.settings.resuming:
+            if not self.settings.resume:
                 if self.rank_0:
                     print(f'{self.exp_dir} already exists! Erasing it')
                     shutil.rmtree(self.exp_dir)
@@ -254,20 +255,28 @@ class Experiment():
             else:
                 raise e
 
+        self.tune_metrics = defaultdict(list)
+
         # When training with mixed precision and only finetuning last layers, we
         # do not have to backpropagate the streaming layers
-        if self.settings.mixedprecision and not self.settings.train_all_layers:
-            self.settings.train_streaming_layers = False
+        if self.settings.speed.mixedprecision and not self.settings.model.train_all_layers:
+            self.settings.model.train_streaming_layers = False
 
         torch.cuda.set_device(int(self.settings.local_rank))
         torch.backends.cudnn.benchmark = True  # type:ignore
 
     def run_experiment(self):
         self.configure_experiment()
-        if self.settings.only_tune:
-            self.tune_epoch(0)
+        if self.settings.test.test_only:
+            e = self.settings.resume_epoch
+            checkpoint_loaded, _ = self.tuner.load_checkpoint_if_available(e)
+            self.test(checkpoint_loaded)
         else:
             self.train_and_tune_epochs()
+            if self.settings.data.test_csv:
+                e = self.get_best_epoch(self.settings.tune.tracking)
+                checkpoint_loaded, _ = self.tuner.load_checkpoint_if_available(e)
+                self.test(checkpoint_loaded)
 
     def configure_experiment(self):
         if self.distributed:
@@ -282,7 +291,7 @@ class Experiment():
         self._sync_distributed_if_needed()
         self._enable_mixed_precision_if_needed()
         self._log_details()
-        if self.settings.variable_input_shapes:
+        if self.settings.speed.variable_input_shapes:
             self._configure_tile_delta()
 
     def _test_distributed(self):
@@ -301,27 +310,27 @@ class Experiment():
         GPUs, and how many image gradients we are gonna accumulate before doing
         an optimizer step.
         """
-        if self.settings.accumulate_batch == -1:
-            self.settings.accumulate_batch = int(self.settings.batch_size / world_size)
-            self.settings.batch_size = 1
-        elif not self.settings.gather_batch_on_one_gpu:
-            self.settings.batch_size = int(self.settings.batch_size / world_size)
-            self.settings.accumulate_batch = self.settings.accumulate_batch
+        if self.settings.training.accumulate_grad_batches == -1:
+            self.settings.training.accumulate_grad_batches = int(self.settings.training.batch_size / world_size)
+            self.settings.training.batch_size = 1
+        elif not self.settings.training.gather_batch_on_one_gpu:
+            self.settings.training.batch_size = int(self.settings.training.batch_size / world_size)
+            self.settings.training.accumulate_grad_batches = self.settings.training.accumulate_grad_batches
         else:
-            self.settings.batch_size = int(self.settings.batch_size / world_size)
+            self.settings.training.batch_size = int(self.settings.training.batch_size / world_size)
 
         if self.rank_0:
-            print(f'Per GPU batch-size: {self.settings.batch_size}, ' +
-                  f'accumulate over batch: {self.settings.accumulate_batch}')
+            print(f'Per GPU batch-size: {self.settings.training.batch_size}, ' +
+                  f'accumulate over batch: {self.settings.training.accumulate_grad_batches}')
 
-        assert self.settings.batch_size > 0
-        assert self.settings.accumulate_batch > 0
+        assert self.settings.training.batch_size > 0
+        assert self.settings.training.accumulate_grad_batches > 0
 
     def train_and_tune_epochs(self):
-        epochs_to_train = np.arange(self.start_at_epoch, self.settings.epochs)
+        epochs_to_train = np.arange(self.start_at_epoch, self.settings.training.nepochs)
         for e in epochs_to_train:
             self.train_epoch(e, self.trainer)
-            if self.settings.tune and e % self.settings.tune_interval == 0:
+            if e % self.settings.tuning.tune_every == 0:
                 self.tune_epoch(e)
 
     def train_epoch(self, e, trainer):
@@ -332,8 +341,32 @@ class Experiment():
             self.log_train_metrics()
         if self.distributed:
             self.train_sampler.set_epoch(int(e + 10))
-        if self.settings.mixedprecision and e == 0:
+        if self.settings.speed.mixedprecision and e == 0:
             self.trainer.grad_scaler.set_growth_interval(20)
+
+    def tune_epoch(self, e):
+        logits, gt = self.tuner.tune_epoch(self._tune_batch_callback)
+        if self.rank_0:
+            self.save_logits(logits, gt, e)
+            self.log_tune_metrics()
+            self.save_if_needed(e)
+
+    def test(self, checkpoint_loaded: bool):
+        if checkpoint_loaded:
+            self.tuner.test_full_dataloader(self.test_loader, self._test_batch_callback)
+            if self.rank_0:
+                self.log_test_metrics()
+        else:
+            raise ValueError(f'Model checkpoint was not successfully loaded! Aborting...')
+
+    def save_logits(self, logits, gt, epoch):
+        try:
+            logits_save_path = Path(self.exp_dir, f'tune_logits_{epoch}')
+            gt_save_path = Path(self.exp_dir, f'tune_gt_{epoch}')
+            np.save(logits_save_path, logits)
+            np.save(gt_save_path, gt)
+        except Exception as exc:
+            print(f'Logits could not be written to disk: {exc}')
 
     def log_train_metrics(self):
         metrics = self.trainer.get_epoch_metrics()
@@ -357,43 +390,32 @@ class Experiment():
         for name, val in metrics.items():
             wandb.define_metric(f'tune/{name}', step_metric='epoch')
             wandb.log({f'tune/{name}': val})
+            self.tune_metrics[name].append(val)
 
-    def tune_epoch(self, e):
-        logits, gt = self.tuner.tune_epoch(self._tune_batch_callback)
-
-        if self.rank_0:
-            if self.settings.only_tune:
-                epoch = self.settings.resume_epoch
-            else:
-                epoch = e
-            self.save_logits(logits, gt, epoch)
-            self.log_tune_metrics()
-            self.save_if_needed(e)
-
-    def save_logits(self, logits, gt, epoch):
-        try:
-            logits_save_path = Path(self.exp_dir, f'tune_logits_{epoch}')
-            gt_save_path = Path(self.exp_dir, f'tune_gt_{epoch}')
-            np.save(logits_save_path, logits)
-            np.save(gt_save_path, gt)
-        except Exception as exc:
-            print(f'Logits could not be written to disk: {exc}')
+    def log_test_metrics(self):
+        metrics = self.tuner.get_epoch_metrics()
+        print(f'Test: accuracy = {metrics["acc"]}, auc = {metrics["auc"]}')
+        for name, val in metrics.items():
+            wandb.log({f'test/{name}': val})
 
     def save_if_needed(self, e):
-        if self.settings.save and not self.settings.only_tune:
+        if self.settings.logging.save_checkpoint and not self.settings.test.test_only:
             self.trainer.save_checkpoint(e)
 
     def _configure_dataloaders(self):
-        self.train_dataset = self._get_dataset(training=True, csv_file=self.settings.train_csv)
+        self.train_dataset = self._get_dataset(stage='train', csv_file=self.settings.data.train_csv)
         self.train_loader, self.train_sampler = self._get_dataloader(self.train_dataset, shuffle=True)
-        self.tune_dataset = self._get_dataset(training=False, csv_file=self.settings.tune_csv)
+        self.tune_dataset = self._get_dataset(stage='tune', csv_file=self.settings.data.tune_csv)
         self.tune_loader, _ = self._get_dataloader(self.tune_dataset, shuffle=False)
+        if self.settings.data.test_csv:
+            self.test_dataset = self._get_dataset(stage='test', csv_file=self.settings.data.test_csv)
+            self.test_loader, _ = self._get_dataloader(self.test_dataset, shuffle=False)
 
     def _get_dataloader(self, dataset: torch.utils.data.Dataset, shuffle=True):
-        batch_size, num_workers = 1, self.settings.num_workers
+        batch_size, num_workers = 1, self.settings.speed.num_workers
         sampler = None
 
-        if self.settings.weighted_sampler:
+        if self.settings.training.weighted_sampler:
             if shuffle:
                 sampler = self.weighted_sampler(dataset)
                 shuffle = False
@@ -401,20 +423,31 @@ class Experiment():
         if self.distributed:
             if shuffle:
                 shuffle = False
-                sampler = torch.utils.data.distributed.DistributedSampler(dataset,
-                                                                          num_replicas=torch.cuda.device_count(),
-                                                                          rank=self.settings.local_rank)
+                sampler = torch.utils.data.distributed.DistributedSampler(
+                    dataset,
+                    num_replicas=torch.cuda.device_count(),
+                    rank=self.settings.local_rank,
+                )
             else:
                 if self.distributed:
-                    sampler = OrderedDistributedSampler(dataset, num_replicas=torch.cuda.device_count(),
-                                                        rank=self.settings.local_rank, batch_size=1)
+                    sampler = OrderedDistributedSampler(
+                        dataset,
+                        num_replicas=torch.cuda.device_count(),
+                        rank=self.settings.local_rank,
+                        batch_size=1,
+                    )
 
         # TODO: maybe disable automatic batching?
         # https://pytorch.org/docs/stable/data.html
         # pin memory True saves GPU memory?
-        loader = torch.utils.data.DataLoader(dataset, sampler=sampler, batch_size=batch_size,
-                            shuffle=shuffle, num_workers=num_workers,
-                            pin_memory=False)
+        loader = torch.utils.data.DataLoader(
+            dataset,
+            sampler=sampler,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            num_workers=num_workers,
+            pin_memory=False,
+        )
 
         return loader, sampler
 
@@ -431,52 +464,63 @@ class Experiment():
             sampler = torch.utils.data.sampler.WeightedRandomSampler(weights, num_samples=len(self.train_dataset), replacement=True)
         return sampler
 
-    def _get_dataset(self, training, csv_file):
-        limit = self.settings.train_set_size
-        if not training:
-            # limit = -1
-            limit = self.settings.tune_set_size
-        variable_input_shapes = self.settings.tune_whole_input if not training else self.settings.variable_input_shapes
-        return TissueDataset(img_size=self.settings.image_size,
-                             img_dir=self.settings.data_dir,
-                             cache_dir=self.settings.copy_dir,
-                             filetype=self.settings.filetype,
+    def _get_dataset(self, stage, csv_file):
+        training = False
+        if stage == 'train':
+            training = True
+            limit = self.settings.training.train_set_size
+        elif stage == 'tune':
+            limit = self.settings.tuning.tune_set_size
+        else:
+            limit = -1
+        variable_input_shapes = self.settings.tuning.tune_whole_input if not training else self.settings.speed.variable_input_shapes
+        return TissueDataset(img_size=self.settings.training.image_size,
+                             img_dir=self.settings.data.data_dir,
+                             cache_dir=self.settings.data.copy_dir,
+                             filetype=self.settings.data.filetype,
                              csv_fname=csv_file,
                              training=training,
                              limit_size=limit,
                              variable_input_shapes=variable_input_shapes,
-                             tile_size=self.settings.tile_size,
-                             multiply_len=self.settings.epoch_multiply if training else 1,
-                             num_classes=self.settings.num_classes,
-                             regression=self.settings.regression,
-                             convert_to_vips=self.settings.convert_to_vips,
+                             tile_size=self.settings.training.tile_size,
+                             multiply_len=self.settings.training.epoch_multiply if training else 1,
+                             num_classes=self.settings.training.num_classes,
+                             regression=self.settings.training.regression,
+                             convert_to_vips=self.settings.speed.convert_to_vips,
                              rank_0=self.rank_0)
 
     def _train_batch_callback(self, tuner, batches_tuned, loss):
-        if self.rank_0 and self.settings.progressbar:
+        if self.rank_0 and self.settings.logging.progressbar:
             epoch_loss = tuner.get_batch_loss()
             progress_bar(batches_tuned, math.ceil(len(self.train_dataset) / float(self.world_size)),
                          '%s loss: %.3f, b loss: %.3f' %
                          ("Train", epoch_loss, loss))
 
     def _tune_batch_callback(self, tuner, batches_tuned, loss):
-        if self.rank_0 and self.settings.progressbar:
+        if self.rank_0 and self.settings.logging.progressbar:
             epoch_loss = tuner.get_batch_loss()
             progress_bar(batches_tuned, math.ceil(len(self.tune_dataset) / float(self.world_size)),
                          '%s loss: %.3f, b loss: %.3f' %
                          ("Tune", epoch_loss, loss))
 
+    def _test_batch_callback(self, batches_tuned):
+        if self.rank_0 and self.settings.logging.progressbar:
+            progress_bar(batches_tuned, math.ceil(len(self.test_dataset) / float(self.world_size)),
+                         'Test',
+            )
+
+
     def _configure_optimizer(self):
         params = self._get_trainable_params()
-        self.optimizer = torch.optim.SGD(params, lr=self.settings.lr, momentum=0.9)
+        self.optimizer = torch.optim.SGD(params, lr=self.settings.training.lr, momentum=0.9)
 
     def _get_trainable_params(self):
-        if self.settings.train_all_layers:
+        if self.settings.model.train_all_layers:
             params = list(self.stream_net.parameters()) + list(self.net.parameters())
         else:
             if self.rank_0:
                 print('WARNING: optimizer only training last params of network!')
-            if self.settings.mixedprecision:
+            if self.settings.speed.mixedprecision:
                 params = list(self.net.parameters())
                 for param in self.stream_net.parameters(): param.requires_grad = False
             else:
@@ -487,26 +531,26 @@ class Experiment():
     def _configure_trainers(self):
         options = StreamingTrainerOptions()
         options.dataloader = self.train_loader
-        options.num_classes = self.settings.num_classes
+        options.num_classes = self.settings.training.num_classes
         options.net = self.net
         options.optimizer = self.optimizer
         options.criterion = self.loss
         options.save_dir = self.exp_dir
         options.checkpointed_net = self.stream_net
-        options.batch_size = self.settings.batch_size
-        options.accumulate_over_n_batches = self.settings.accumulate_batch
+        options.batch_size = self.settings.training.batch_size
+        options.accumulate_over_n_batches = self.settings.training.accumulate_grad_batches
         options.n_gpus = self.world_size
         options.gpu_rank = int(self.settings.local_rank)
         options.distributed = self.distributed
         options.freeze = self.freeze_layers
-        options.tile_shape = (1, 3, self.settings.tile_size, self.settings.tile_size)
+        options.tile_shape = (1, 3, self.settings.training.tile_size, self.settings.training.tile_size)
         options.dtype = torch.uint8  # not needed, but saves memory
-        options.train_streaming_layers = self.settings.train_streaming_layers
-        options.mixedprecision = self.settings.mixedprecision
-        options.normalize_on_gpu = self.settings.normalize_on_gpu
-        options.multilabel = self.settings.multilabel
-        options.regression = self.settings.regression
-        options.gather_batch_on_one_gpu = self.settings.gather_batch_on_one_gpu
+        options.train_streaming_layers = self.settings.model.train_streaming_layers
+        options.mixedprecision = self.settings.speed.mixedprecision
+        options.normalize_on_gpu = self.settings.speed.normalize_on_gpu
+        options.multilabel = self.settings.training.multilabel
+        options.regression = self.settings.training.regression
+        options.gather_batch_on_one_gpu = self.settings.training.gather_batch_on_one_gpu
         self.trainer = StreamingCheckpointedTrainer(options)
 
         self.tuner = StreamingCheckpointedTrainer(options, sCNN=self.trainer.sCNN)
@@ -518,7 +562,7 @@ class Experiment():
 
     def _configure_tile_delta(self):
         if isinstance(self.trainer, StreamingCheckpointedTrainer):
-            delta = self.settings.tile_size - (self.trainer.sCNN.tile_gradient_lost.left
+            delta = self.settings.training.tile_size - (self.trainer.sCNN.tile_gradient_lost.left
                                                + self.trainer.sCNN.tile_gradient_lost.right)
             delta = delta // self.trainer.sCNN.output_stride[-1]
             delta *= self.trainer.sCNN.output_stride[-1]
@@ -531,23 +575,23 @@ class Experiment():
 
     def _configure_loss(self):
         weight = None
-        if self.settings.multilabel:
+        if self.settings.training.multilabel:
             self.loss = torch.nn.BCEWithLogitsLoss(weight=weight)
-        elif self.settings.regression:
+        elif self.settings.training.regression:
             self.loss = torch.nn.SmoothL1Loss()
         else:
             self.loss = torch.nn.CrossEntropyLoss(weight=weight)
 
     def _configure_model(self):
-        if self.settings.mobilenet:
+        if self.settings.model.mobilenet:
             self._configure_mobilenet()
-        elif self.settings.resnet:
+        elif self.settings.model.resnet:
             net = self._configure_resnet()
             self.stream_net, self.net = self._split_model(net)
         self._freeze_bn_layers()
 
     def _configure_mobilenet(self):
-        net = torch.hub.load('pytorch/vision:v0.5.0', 'mobilenet_v2', pretrained=self.settings.pretrained)
+        net = torch.hub.load('pytorch/vision:v0.5.0', 'mobilenet_v2', pretrained=self.settings.model.pretrained)
         net.features[1].conv[0][0].stride = (2, 2)  # TODO: or maybe add averagepool after first conv
         net.classifier = torch.nn.Linear(1280, 1)
         torch.nn.init.normal_(net.classifier.weight, 0, 0.01)
@@ -557,8 +601,8 @@ class Experiment():
         self.net = net.cuda()
 
     def _configure_resnet(self):
-        net = torchvision.models.resnet34(pretrained=self.settings.pretrained)
-        net.fc = torch.nn.Linear(512, self.settings.num_classes)
+        net = torchvision.models.resnet34(pretrained=self.settings.model.pretrained)
+        net.fc = torch.nn.Linear(512, self.settings.training.num_classes)
         torch.nn.init.xavier_normal_(net.fc.weight)
         net.fc.bias.data.fill_(0)  # type:ignore
         net.avgpool = torch.nn.AdaptiveMaxPool2d(1)
@@ -578,13 +622,13 @@ class Experiment():
         state = None
         resumed = False
 
-        if self.settings.resuming and self.settings.resume_epoch == -1:
+        if self.settings.resume and self.settings.resume_epoch == -1:
             resumed, state = self._try_resuming_last_checkpoint(resumed)
 
         if not resumed and self.settings.resume_epoch > -1:
-            name = self.settings.resume_name if self.settings.resume_name else self.settings.exp_name
+            name = self.settings.resume_from_name if self.settings.resume_from_name else self.settings.exp_name
 
-            if self.settings.weight_averaging:
+            if self.settings.tuning.weight_averaging:
                 window = 5
                 resumed, state = self.resume_with_averaging(
                     self.settings.resume_epoch - math.floor(window / 2.),
@@ -658,7 +702,7 @@ class Experiment():
         self.start_at_epoch = start_at_epoch
 
     def _split_model(self, net):
-        if not self.settings.mixedprecision:
+        if not self.settings.speed.mixedprecision:
             stream_net = torch.nn.Sequential(net.conv1, net.bn1, net.relu, net.maxpool,
                                              net.layer1, net.layer2, net.layer3,
                                              net.layer4[0])
@@ -678,13 +722,18 @@ class Experiment():
         return stream_net, net
 
     def _enable_mixed_precision_if_needed(self):
-        if self.settings.mixedprecision:
+        if self.settings.speed.mixedprecision:
             if isinstance(self.trainer, StreamingCheckpointedTrainer):
                 self.trainer.sCNN.dtype = torch.half
                 self.trainer.mixedprecision = True
             if isinstance(self.tuner, StreamingCheckpointedTrainer):
                 self.tuner.sCNN.dtype = torch.half
                 self.tuner.mixedprecision = True
+
+    def get_best_epoch(self, tracking):
+        tracked = self.tune_metrics[tracking]
+        best_epoch = int(np.argmax(tracked))
+        return best_epoch
 
     def _log_details(self):
         if self.rank_0:

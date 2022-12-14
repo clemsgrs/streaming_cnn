@@ -1,70 +1,78 @@
-# REQUIRED
-
+save_dir:
 exp_name: ''  # The name of the current experiment, used for saving checkpoints
-num_classes: 1  # The number of classes in the task
 
-train_csv: ''  # The filenames (without extension) and labels of train set
-tune_csv: ''  # The filenames (without extension) and labels of tuning or test set
-data_dir: ''  # The directory where the images reside
-copy_dir: ''  # If convert_to_vips is on, this is the directory where the .v files are saved
-filetype: '.jpg'  #  The file-extension of the images
-save_dir: ''  # Where to save the checkpoints
-
-
-# NOT REQUIRED
-
-train_set_size: -1  # Sometimes you want to test on smaller train-set you can limit the n-images here
-tune_set_size: -1
-
-# pretrain options
-pretrained: True  # Whether to use ImageNet weights
-
-# train options
-image_size: 16384  # Effective input size of the network
-tile_size: 5120  # The input/tile size of the streaming-part of the network
-epochs: 50  # How many epochs to train
-lr: 1e-4  # Learning rate
-batch_size: 16  # Effective mini-batch size
-multilabel: False
-regression: False
-gather_batch_on_one_gpu: False
-weighted_sampler: False # Oversample minority class, only works in binary tasks
-
-tune: True  # Whether to run on tuning set
-tune_interval: 1  # How many times to run on tuning set, after n train epochs
-tune_whole_input: False
-epoch_multiply: 1  # This will increase the size of one train epoch by reusing train images
-
-# speed
-variable_input_shapes: False  # When the images vary a lot with size, this helps with speed
-mixedprecision: True  # Paper is trained with full precision, but this is way faster
-normalize_on_gpu: True  # Helps with RAM usage of dataloaders
-num_workers: 2  # Number of dataloader workers
-convert_to_vips: False
-
-# model options
-resnet: True  # Only resnet is tested so far
-mobilenet: False  # Experimental
-train_streaming_layers: True  # Whether to backpropagate of streaming-part of network
-train_all_layers: False  # Whether to finetune whole network, or only last block
-
-# save and logging options
-resuming: False  # Will restart from the last checkpoint with same experiment-name
-resume_name: ''  # Restart from another experiment with this name
-resume_epoch: -1  # Restart from specific epoch
-save: True  # Save checkpoints
-progressbar: True  # Show the progressbar
-
-# tuning options
-weight_averaging: False  # average weights over 5 epochs around picked epoch
-only_tune: False  # Only do one tune epoch
+resume: False # will restart from the last checkpoint with same experiment-name
+resume_from_name: # restart from another experiment with this name
+resume_epoch: -1 # restart from specific epoch
 
 local_rank: 0  # Do not touch, used by PyTorch when training distributed
-accumulate_batch: -1  # Do not touch, is calculated automatically
+
+data:
+  data_dir:
+  train_csv: # The filenames (without extension) and labels of training set
+  tune_csv: # The filenames (without extension) and labels of tuning set
+  test_csv: # The filenames (without extension) and labels of testing set
+  # if convert_to_vips is on, this is the directory where the .v files are saved
+  copy_dir: ''
+  filetype: '.jpg'
+
+model:
+  mobilenet: False
+  resnet: True
+  pretrained: True # ImageNet pretraining
+  train_streaming_layers: True # Whether to backpropagate of streaming-part of network
+  train_all_layers: False # Whether to finetune whole network, or only last block
+
+training:
+  num_classes: 2 # The number of classes in the task
+  image_size: 16384 # Effective input size of the network
+  tile_size: 5120 # The input/tile size of the streaming-part of the network
+  nepochs: 50 # How many epochs to train
+  lr: 0.0001 # Learning rate
+  batch_size: 16 # Effective mini-batch size
+  multilabel: False
+  regression: False
+  gather_batch_on_one_gpu: False
+  # sometimes you want to test on smaller train-set you can limit the n-images here
+  train_set_size: -1
+  weighted_sampler: False # Oversample minority class, only works in binary tasks
+  epoch_multiply: 1 # This will increase the size of one train epoch by reusing train images
+  accumulate_grad_batches: -1  # Do not touch, is calculated automatically
+
+tuning:
+  batch_size: 16
+  tune_every: 1 # How many times to run on tuning set, after n train epochs
+  tune_whole_input: False
+  tune_set_size: -1
+  tracking: 'loss'
+  weight_averaging: False # average weights over 5 epochs around picked epoch
+
+
+testing:
+  test_only: False # only run testing
+
+speed:
+  variable_input_shapes: False # When the images vary a lot with size, this helps with speed
+  mixedprecision: True # Paper is trained with full precision, but this is way faster
+  normalize_on_gpu: True # Helps with RAM usage of dataloaders
+  num_workers: 2 # Number of dataloader workers
+  convert_to_vips: False
+
+logging:
+  save_checkpoint: True # save checkpoints
+  progressbar: True # Show the progressbar
 
 wandb:
-  project: 'streaming'
+  project: 'streaming_lightning'
   username: 'clemsg'
-  exp_name: '${exp_name}'
+  exp_name: '${experiment_name}'
   dir: '/home/user'
   group:
+
+###############################
+###############################
+###############################
+
+
+tune: True  # Whether to run on tuning set
+

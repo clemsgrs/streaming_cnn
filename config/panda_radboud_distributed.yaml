@@ -3,17 +3,23 @@ defaults:
   - _self_
 
 exp_name: 'distributed_training'
-num_classes: 2
-
-data_dir: 'data/panda_radboud/pp_slides'
 save_dir: 'output'
-
-train_csv: 'data/panda_radboud/train.csv'
-tune_csv: 'data/panda_radboud/tune.csv'
-filetype: '.jpg'
-
-lr: 2e-4
-num_workers: 1
-tile_size: 3200
-
 local_rank:
+
+data:
+  data_dir: 'data/panda_radboud/pp_slides'
+  train_csv: 'data/panda_radboud/train.csv'
+  tune_csv: 'data/panda_radboud/tune.csv'
+  test_csv: 'data/panda_radboud/test.csv'
+  filetype: '.jpg'
+
+training:
+  num_classes: 2
+  lr: 2e-4
+  tile_size: 3200
+
+tuning:
+  tracking: 'auc'
+
+speed:
+  num_workers: 1

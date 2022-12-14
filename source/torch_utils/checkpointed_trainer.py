@@ -91,6 +91,15 @@ class CheckpointedTrainer(Trainer):
                 self.checkpoint_output(image, label, output)
                 self.tune_batch_if_needed()
 
+    def test_full_dataloader(self, loader, batch_callback):
+        self.reset_epoch_stats()
+        self.batch_callback = batch_callback
+        for x, y in loader:
+            for image, label in zip(x, y):
+                output = self.checkpoint_image_forward(image[None])
+                self.checkpoint_output(image, label, output)
+                self.test_checkpointed_batch()
+
     def checkpoint_image_forward(self, x):
         with torch.no_grad():
             if self.mixedprecision:
@@ -138,6 +147,14 @@ class CheckpointedTrainer(Trainer):
         del loss, fmap
         self.reset_batch_stats()
 
+    def test_checkpointed_batch(self):
+        loss, fmap = self.forward_checkpointed_batch()
+        if loss is not None:
+            loss.detach().cpu()
+        self.batch_callback(self.batches_seen)
+        del loss, fmap
+        self.reset_batch_stats()
+
     def forward_checkpointed_batch(self):
         labels, fmap = self.stack_batch()
         if self.should_finish_batch_on_gpu():
@@ -174,8 +191,10 @@ class CheckpointedTrainer(Trainer):
 
     def backward_batch(self, loss, fmap):
         if self.should_finish_batch_on_gpu():
-            if self.mixedprecision: self.grad_scaler.scale(loss).backward()
-            else: loss.backward()
+            if self.mixedprecision:
+                self.grad_scaler.scale(loss).backward()
+            else:
+                loss.backward()
             fmap_grad = fmap.grad.data
             fmap_grad.detach()
             if self.gather_batch_on_one_gpu:

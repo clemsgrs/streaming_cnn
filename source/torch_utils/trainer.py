@@ -136,7 +136,7 @@ class Trainer():
         self.all_probs = np.append(self.all_probs , probs, axis=0)
         self.all_preds.extend(list(preds))
         self.all_logits.append(logits)
-        self.all_labels.append(list(labels.copy()))  # https://github.com/pytorch/pytorch/issues/973#issuecomment-459398189 | fix RuntimeError: received 0 items of ancdata
+        self.all_labels.append(labels.copy())  # https://github.com/pytorch/pytorch/issues/973#issuecomment-459398189 | fix RuntimeError: received 0 items of ancdata
 
     def stack_epoch_logits(self):
         self.all_logits, self.all_labels = self.epoch_logits_and_labels(gather=True)
@@ -235,6 +235,15 @@ class Trainer():
             loss, logits = self.forward_batch(x, y)
             self.save_batch_stats(loss, logits, y.cpu().numpy())
             batch_callback(self, self.batches_seen, loss)
+
+    def test_full_dataloader(self, loader, batch_callback):
+        self.prepare_network_for_tuning()
+        self.reset_epoch_stats()
+        for x, y in loader:
+            loss, logits = self.forward_batch(x, y)
+            self.save_batch_stats(loss, logits, y.cpu().numpy())
+            batch_callback(self.batches_seen)
+        self.stack_epoch_logits()
 
     def forward_batch(self, x, y):
         if self.mixedprecision:
