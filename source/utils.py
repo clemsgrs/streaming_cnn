@@ -628,7 +628,7 @@ class Experiment():
         if not resumed and self.settings.resume_epoch > -1:
             name = self.settings.resume_from_name if self.settings.resume_from_name else self.settings.experiment_name
 
-            if self.settings.tuning.weight_averaging:
+            if self.settings.testing.weight_averaging:
                 window = 5
                 resumed, state = self.resume_with_averaging(
                     self.settings.resume_epoch - math.floor(window / 2.),

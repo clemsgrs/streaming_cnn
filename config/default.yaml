@@ -45,10 +45,10 @@ tuning:
   tune_whole_input: False
   tune_set_size: -1
   tracking: 'loss'
-  weight_averaging: False # average weights over 5 epochs around picked epoch
 
 testing:
   test_only: False # only run testing
+  weight_averaging: False # average weights over 5 epochs around picked epoch
 
 speed:
   variable_input_shapes: False # When the images vary a lot with size, this helps with speed
