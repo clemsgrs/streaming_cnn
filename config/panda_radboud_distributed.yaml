@@ -2,7 +2,7 @@ defaults:
   - default
   - _self_
 
-exp_name: 'distributed_training'
+experiment_name: 'distributed_training'
 save_dir: 'output'
 local_rank:
 

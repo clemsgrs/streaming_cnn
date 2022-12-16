@@ -2,7 +2,7 @@ defaults:
   - default
   - _self_
 
-exp_name: 'debug'
+experiment_name: 'debug'
 save_dir: 'output'
 
 data:

@@ -243,7 +243,7 @@ class Experiment():
         self.world_size = world_size
         self.distributed = running_distributed
 
-        self.exp_dir = Path(settings.save_dir, settings.exp_name)
+        self.exp_dir = Path(settings.save_dir, settings.experiment_name)
         try:
             self.exp_dir.mkdir(exist_ok=False, parents=True)
         except Exception as e:
@@ -267,14 +267,14 @@ class Experiment():
 
     def run_experiment(self):
         self.configure_experiment()
-        if self.settings.test.test_only:
+        if self.settings.testing.test_only:
             e = self.settings.resume_epoch
             checkpoint_loaded, _ = self.tuner.load_checkpoint_if_available(e)
             self.test(checkpoint_loaded)
         else:
             self.train_and_tune_epochs()
             if self.settings.data.test_csv:
-                e = self.get_best_epoch(self.settings.tune.tracking)
+                e = self.get_best_epoch(self.settings.tuning.tracking)
                 checkpoint_loaded, _ = self.tuner.load_checkpoint_if_available(e)
                 self.test(checkpoint_loaded)
 
@@ -399,7 +399,7 @@ class Experiment():
             wandb.log({f'test/{name}': val})
 
     def save_if_needed(self, e):
-        if self.settings.logging.save_checkpoint and not self.settings.test.test_only:
+        if self.settings.logging.save_checkpoint and not self.settings.testing.test_only:
             self.trainer.save_checkpoint(e)
 
     def _configure_dataloaders(self):
@@ -626,7 +626,7 @@ class Experiment():
             resumed, state = self._try_resuming_last_checkpoint(resumed)
 
         if not resumed and self.settings.resume_epoch > -1:
-            name = self.settings.resume_from_name if self.settings.resume_from_name else self.settings.exp_name
+            name = self.settings.resume_from_name if self.settings.resume_from_name else self.settings.experiment_name
 
             if self.settings.tuning.weight_averaging:
                 window = 5

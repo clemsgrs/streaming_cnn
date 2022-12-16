@@ -1,5 +1,5 @@
 save_dir:
-exp_name: ''  # The name of the current experiment, used for saving checkpoints
+experiment_name: ''  # The name of the current experiment, used for saving checkpoints
 
 resume: False # will restart from the last checkpoint with same experiment-name
 resume_from_name: # restart from another experiment with this name
@@ -47,7 +47,6 @@ tuning:
   tracking: 'loss'
   weight_averaging: False # average weights over 5 epochs around picked epoch
 
-
 testing:
   test_only: False # only run testing
 
@@ -63,16 +62,9 @@ logging:
   progressbar: True # Show the progressbar
 
 wandb:
-  project: 'streaming_lightning'
+  project: 'streaming'
   username: 'clemsg'
   exp_name: '${experiment_name}'
   dir: '/home/user'
   group:
-
-###############################
-###############################
-###############################
-
-
-tune: True  # Whether to run on tuning set
 
